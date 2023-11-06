@@ -1,0 +1,29 @@
+[tasks]
+prove
+
+[options]
+prove: mode bmc
+prove: depth 20
+
+[engines]
+smtbmc
+
+[script]
+# Read in the first Verilog module (original)
+read_verilog original_module.v
+
+# Rename the original module to avoid conflict
+rename original_module original_module_renamed
+
+# Read in the second Verilog module (modified)
+read_verilog modified_module.v
+
+# Now both modules are in the design with different names
+
+# Generate the Miter circuit by comparing the two modules
+miter -equiv -make_assert -flatten original_module_renamed original_module miter_circuit
+prep -top miter_circuit
+
+[files]
+original_module.v
+modified_module.v
