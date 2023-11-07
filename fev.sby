@@ -1,29 +1,26 @@
-[tasks]
-prove
-
 [options]
-prove: mode bmc
-prove: depth 20
+mode bmc
+depth 20
+
+[script]
+read_verilog -sv ${ORIGINAL_FILE}
+prep -top ${MODULE_NAME}
+rename ${MODULE_NAME} ${MODULE_NAME}_original
+
+read_verilog -sv ${MODIFIED_FILE}
+prep -top ${MODULE_NAME}
+rename ${MODULE_NAME} ${MODULE_NAME}_modified
+
+miter -equiv -make_assert -flatten ${MODULE_NAME}_original ${MODULE_NAME}_modified miter_circuit
+prep -top miter_circuit
 
 [engines]
 smtbmc
 
-[script]
-# Read in the first Verilog module (original)
-read_verilog original_module.v
-
-# Rename the original module to avoid conflict
-rename original_module original_module_renamed
-
-# Read in the second Verilog module (modified)
-read_verilog modified_module.v
-
-# Now both modules are in the design with different names
-
-# Generate the Miter circuit by comparing the two modules
-miter -equiv -make_assert -flatten original_module_renamed original_module miter_circuit
-prep -top miter_circuit
+[script-python]
+# This is where you'd specify the path to the Python script and the function to call
+exec(open("/path/to/your/yosys/scripts/my_yosys_script.py").read())
 
 [files]
-original_module.v
-modified_module.v
+${ORIGINAL_FILE}
+${MODIFIED_FILE}
