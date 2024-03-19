@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Make sure there's a history/ directory. Otherwise report error and exit.
+if [[ ! -d history ]]; then
+  echo "No history/ directory found. Run this script from a conversion directory."
+  exit 1
+fi
+
+files_to_delete="history *_orig.v messages.json prompt_id.txt fev.sby"
+
+# Report of files to delete based on which exist and confirm:
+echo "Files to delete:"
+ls $files_to_delete 2> /dev/null
+echo "Delete these files? (y/n)"
+read -r response
+if [[ $response != "y" ]]; then
+  echo "Aborting."
+  exit 1
+fi
+
+rm -rf $files_to_delete

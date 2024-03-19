@@ -1,0 +1,46 @@
+[{
+"desc": "Initial code"
+}, {
+"desc": "Three-space indentation",
+"prompt": "Use three spaces as the standard unit of indentation. The module declaration as well as the \"endmodule\" should have no indentation, while the body of the module should have one level (three spaces) of indentation."
+}, {
+"desc": "Clocking",
+"prompt":
+"In this refactoring step, you will examine the use of clocks in the module and make changes as necessary to conform to the clocking requirements of TL-Verilog. You must first ensure that the use of clocks conforms to the assumptions of TL-Verilog logic, so let's first discuss TL-Verilog's clocking assumptions, then discuss some of the use of clocks you might encounter in Verilog code, then discuss how to address various scenarios.
++
++TL-Verilog language extensions are used to express digital, sequential logic. While the broader codebase we are transforming may involve different clock domains with clocks that run at different frequencies and may transmit signals across clock domains, TL-Verilog is used only within a clock domain. We do not aim to convert the clock network that would provide the clock for different clock domains nor the clock domain crossing logic that would reliably transmit data across clock domains. The provided Verilog logic is expected to be clocked by a single free-running, global clock input signal (or to be purely combinational with no clock). The FEV flow also requires a single free-running input clock (or no clock).
++
++TL-Verilog logic can generate \"non-functional gated-clocks\". Gated clocks are produced from the main (free-running, global) clock, using a condition signal to determine each cycle whether or not there should be a pulse on the gated clock corresponding to the pulse on the main clock. For a non-functional gated clock the absence of clock pulses does not affect the behavior of the circuit. It is used only to save power. \"Functional clock gating\", on the other hand, is used to affect the circuit's behavior as well as to save power. (It may be difficult to distinguish this by analyzing the code.) TL-Verilog uses fine-grained conditions to generate fine-grained gated clocks. These conditions reflect the validity of the data in the flip-flops that are controlled by the gated clocks. Though it should be possible to preserve the gating once converted to TL-Verilog, this gating may limit the ability to optimize the expression of the logic using TL-Verilog. FEV should work fine with internally-generated gated clocks (functional or non-functional).
++
++Verilog logic can infer clock gating. For example, a `reg` signal that is conditionally assigned under an `if` statement could be implemented using a gated clock, gated by the `if` condition. (It's up to logic synthesis tools whether to employ a clock gating in this case.) This sort of clock gating is perfectly fine and will be addressed later. You can ignore such possible clock gating for now.
++
++You may also encounter divided clocks. Divided clocks are generated from the main clock to have a period that is a multiple of the main clock's period. These would be problematic.
++
++Analyze the explicit use of clocks in the code. Clock signals can be identified based on their names ('clock', 'clk', etc.), their generation, and/or their usage. Internal clocks may be generated from input clocks, possibly using externally-defined modules or macros. A clock signal will be used in a `posedge` or `negedge` condition of an `always @` or `always_ff`.
++
++In the \"notes\" field of your response, report on the global clock signal, either which signal it is, that there isn't one, or that it is not clear which signal is the global clock. Additionally, add a special field to the response called \"clock\", with a value of the name of the clock input signal. If there is no input clock signal, or if it is not clear which is the input clock signal, the value should be an empty string.
++
++In the \"issues\" field of the response, list all other potential explicit input and internal clock signals (if any) with a brief description for each of what type of clock it is (or might be) and how it is used. Also, updated the code with \"TODO: LLM: ...\" comments to identify these issues in the code.
++
++TL-Verilog has a requirement that the at-most-one clock signal be named `clk`. Our code conversion flow currently only supports flip-flops that are triggered on the positive edge of the clock. If the input clock (assuming there is one) has a name other than `clk`, create a `clk` signal at the beginning of the module. For example, if the input clock name is 'input_clk', add the line `logic clk = input_clock;` at the beginning of the module body and replace `input_clock` (in this example) with `clk` throughout the code. There may also be a clock inversion in the logic or consistent use of a clocks negative edge. This would need to be addressed such that flip-flops are always triggered on the positive edge of `clk`."
+}, {
+"desc": "Reset issues",
+"prompt":
+"Most sequential circuits will use an external global (\"cold\") reset signal to initialize machine state to known reset values. This reset will be propagated throughout the design, beginning as an asynchronous condition, and possibly being synchronized with the clock at some point in its distribution. Synchronous reset signals may be delayed through flip-flops before reaching the states they control.
++
++Some circuits may have lesser reset signals that might reset a subset of the states in the overall circuit. These might be termed \"soft reset\", \"logic reset\", \"local reset\", etc.
++
++Often Verilog developers prefer to use inverted (aka negatively-asserted) reset signals (that are low (zero) during reset, and high (one) during normal operation), and this is fine, though FEV needs to be aware of the assertion level. Negatively-asserted reset signals might have names like `nrst`, `reset_n`, `resetb`, etc. (where 'n' stands for \"not\" and 'b' stands for \"bar\").
++
++Our current module should have a primary reset input signal. The reset input should be a synchronous signal, though this may not be obvious from the code. A name like `arst` might indicate an asynchronous reset, or code comments or flip-flop module names might also suggest the use of an asynchronous reset. Report an issue about this and add a \"TODO: LLM: ...\" comment about this, only if it is clear that the reset signal is intended to be asynchronous.
++
++If it is clear which is the reset signal, add two special fields to the response. The first will be called \"reset\" and its value will be the name of the reset signal. The second special field will be called \"assertion\". This field indicates the assertion level of the reset signal, and it must have a value of \"high\" or \"low\".
++
++Typically, to properly reset the design, the reset signal(s) will need to be held for a minimum number of global clock cycles. In converting Verilog to TL-Verilog, it may be important to apply certain logic transformations that are only valid under the assumption that reset must be held for multiple clock cycles. Our FEV flow will assume that the global reset input is asserted for a minimum of five cycles and is deasserted for the remaining cycles. Other reset signals may have similar constraints that we could benefit from, but our FEV automation does not have the ability to apply constraints to more than one reset signal, so we will not treat these reset inputs any differently than any other inputs.
++
++Identify the global (cold) reset signal using the \"reset\" and \"assertion\" fields. Reset signals can be identified by their names (e.g. reset, rst, reset_n, resetb, nrst, etc.) and by their usage. Asside from possible comment additions/changes, there is no need to modify the Verilog code. Use \"issues\" to comment briefly on additional reset signals, describing in at most one sentence how broadly they are used in the module."
+},{
+"desc": "Non-synthesizable and analog code",
+"prompt":
+"TL-Verilog and FEV are tools for working with digital, sequential logic. They are not intended for working with verification test bench modeling, and they are not meant for analog logic. Identify any non-synthesizable or analog code in the codebase. Add \"TODO: LLM: ...\" comments to the code to identify these issues, and report them in the \"issues\" field of the response."
+}]

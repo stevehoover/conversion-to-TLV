@@ -1,26 +1,27 @@
 [options]
 mode bmc
 depth 20
+#set-init-zero   A ChatGPT hallucination.
 
 [script]
-read_verilog -sv ${ORIGINAL_FILE}
-prep -top ${MODULE_NAME}
-rename ${MODULE_NAME} ${MODULE_NAME}_original
+read_verilog -sv <ORIGINAL_FILE>
+#prep -top <MODULE_NAME>  # ChatGPT suggests to uncomment.
+rename <MODULE_NAME> <MODULE_NAME>_original
 
-read_verilog -sv ${MODIFIED_FILE}
-prep -top ${MODULE_NAME}
-rename ${MODULE_NAME} ${MODULE_NAME}_modified
+read_verilog -sv <MODIFIED_FILE>
+#prep -top <MODULE_NAME>  # ChatGPT suggests to uncomment.
+#rename <MODULE_NAME> <MODULE_NAME>_modified
 
-miter -equiv -make_assert -flatten ${MODULE_NAME}_original ${MODULE_NAME}_modified miter_circuit
+miter -equiv -make_assert -flatten <MODULE_NAME>_original <MODULE_NAME> miter_circuit
 prep -top miter_circuit
 
+# Define reset behavior
+setattr -unset init miter_circuit   # Needed first to set properties below, then reenabled.
+chformal -assume -early miter_circuit   # The -assume flag sets a property as an assumption, and -early applies this assumption early in the process.
+chformal -live -fair -cover -remove miter_circuit   # remove certain types of formal properties from the design
+setattr -set init miter_circuit   # reenable.
+chformal -init-ones reset -module miter_circuit
+chformal -init-zero -from 5 reset -module miter_circuit
+
 [engines]
-smtbmc
-
-[script-python]
-# This is where you'd specify the path to the Python script and the function to call
-exec(open("/path/to/your/yosys/scripts/my_yosys_script.py").read())
-
-[files]
-${ORIGINAL_FILE}
-${MODIFIED_FILE}
+smtbmc  # z3, yices, boolector
