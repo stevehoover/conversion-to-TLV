@@ -27,11 +27,15 @@ All updates performed by the script are captured in the file system so the scrip
 
 After refactoring the Verilog, the Verilog can be converted to TL-Verilog and refactored further.
 
+This flow chart illustrates the conversion process provided by `convert.py`, though it should be taken with a grain of salt, as this is an actively-changing project, and this diagram may not be maintained.
+
+![Conversion Flow Image](./conversion_flow.png)
+
 ## Status
 
 The initial script is in place for the Verilog conversion steps.
 
-## Ideas for Code Sources
+## Ideas for Verilog Code Sources
 
 - https://github.com/NVlabs/verilog-eval/blob/main/data/VerilogEval_Human.jsonl
 - https://hdlbits.01xz.net/wiki/Main_Page
