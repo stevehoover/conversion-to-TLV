@@ -499,7 +499,7 @@ def run_sby():
 # Return the subprocess.CompletedProcess of the FEV command.
 def run_yosys_fev(module_name, orig_file_name, modified_file_name):
   env = {"TOP_MODULE": module_name, "ORIGINAL_VERILOG_FILE": orig_file_name, "MODIFIED_VERILOG_FILE": modified_file_name}
-  return subprocess.run(["/home/steve/repos/warp-v/formal/env/bin/yosys", repo_dir + "/fev.tcl"], env=env)
+  return subprocess.run(["/home/owais/yosys/yosys", repo_dir + "/fev.tcl"], env=env)
 
 # Functions that determine the state of the refactoring step based on the state of the files.
 # TODO: replace?

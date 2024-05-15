@@ -1,0 +1,17 @@
+[gold]
+read_verilog -DGOLD adder.v
+prep -top adder
+
+[gate]
+read_verilog -DGATE adder.v
+prep -top adder
+
+[collect *]
+group sum*
+group carry*
+
+[strategy simple]
+use sat
+depth 2
+
+
