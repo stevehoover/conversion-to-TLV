@@ -1,11 +1,11 @@
 module adder(
-	input wire a,
-	input wire b,
+	input wire c,
+	input wire d,
 	output wire sum,
 	output wire carry
 );
 
-assign sum = a * b;
-assign carry = a + b;
+assign sum = c * d;
+assign carry = c + d;
 
 endmodule
