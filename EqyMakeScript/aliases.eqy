@@ -1,0 +1,16 @@
+[gold]
+read_verilog -DGOLD aliases.sv
+prep -top aliases
+
+[gate]
+read_verilog -DGATE aliases.s.sv
+prep -top aliases
+
+[collect *]
+group sum*
+group carry*
+
+[strategy simple]
+use sat
+depth 10
+

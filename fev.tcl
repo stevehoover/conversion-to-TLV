@@ -64,3 +64,6 @@ if {$reset_assertion_level ne ""} {
 set sat_cmd "sat -show-all -seq 19 -prove-asserts -enable_undef -set-init-zero $reset_cmds -dump_vcd tmp/fev.vcd miter"
 puts $sat_cmd
 yosys $sat_cmd
+
+
+
