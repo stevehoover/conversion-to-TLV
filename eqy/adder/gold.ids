@@ -1,0 +1,5 @@
+adder . A:top=1 A:src="adder.v:1.1-11.10"
+adder a w=0:0 A:src="adder.v:2.13-2.14" P=I
+adder b w=0:0 A:src="adder.v:3.13-3.14" P=I
+adder carry w=0:0 A:src="adder.v:5.14-5.19" P=O
+adder sum w=0:0 A:src="adder.v:4.14-4.17" P=O

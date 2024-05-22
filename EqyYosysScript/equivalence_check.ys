@@ -1,0 +1,15 @@
+# Read the first design
+read_verilog design1.v
+proc; opt; techmap; opt
+write_verilog design1_synth.v
+
+# Read the second design
+read_verilog design2.v
+proc; opt; techmap; opt
+write_verilog design2_synth.v
+
+# Perform equivalence checking
+equiv_designs design1_synth.v design2_synth.v
+
+# Check equivalence
+equiv_simple

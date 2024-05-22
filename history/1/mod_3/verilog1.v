@@ -1,4 +1,4 @@
-module or_gate (
+module verilog1(
    input wire a,
    input wire b,
    output wire y

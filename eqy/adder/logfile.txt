@@ -1,0 +1,25 @@
+EQY 19:29:30 [adder] read_gold: starting process "yosys -ql adder/gold.log adder/gold.ys"
+EQY 19:29:30 [adder] read_gold: finished (returncode=0)
+EQY 19:29:30 [adder] read_gate: starting process "yosys -ql adder/gate.log adder/gate.ys"
+EQY 19:29:30 [adder] read_gate: finished (returncode=0)
+EQY 19:29:30 [adder] combine: starting process "yosys -ql adder/combine.log adder/combine.ys"
+EQY 19:29:30 [adder] combine: finished (returncode=0)
+EQY 19:29:30 [adder] partition: starting process "cd adder; yosys -ql partition.log partition.ys"
+EQY 19:29:30 [adder] partition: finished (returncode=0)
+EQY 19:29:30 [adder] run: starting process "make -C adder -f strategies.mk"
+EQY 19:29:30 [adder] run: make: Entering directory '/home/owais/conversion-to-TLV/eqy/adder'
+EQY 19:29:30 [adder] run: Running strategy 'simple' on 'adder.carry'..
+EQY 19:29:30 [adder] run: Proved equivalence of partition 'adder.carry' using strategy 'simple'
+EQY 19:29:30 [adder] run: Running strategy 'simple' on 'adder.sum'..
+EQY 19:29:30 [adder] run: Proved equivalence of partition 'adder.sum' using strategy 'simple'
+EQY 19:29:30 [adder] run: make -f strategies.mk summary
+EQY 19:29:30 [adder] run: make[1]: Entering directory '/home/owais/conversion-to-TLV/eqy/adder'
+EQY 19:29:30 [adder] run: make[1]: Leaving directory '/home/owais/conversion-to-TLV/eqy/adder'
+EQY 19:29:30 [adder] run: make: Leaving directory '/home/owais/conversion-to-TLV/eqy/adder'
+EQY 19:29:30 [adder] run: finished (returncode=0)
+EQY 19:29:30 [adder] Successfully proved equivalence of partition adder.sum
+EQY 19:29:30 [adder] Successfully proved equivalence of partition adder.carry
+EQY 19:29:30 [adder] Successfully proved designs equivalent
+EQY 19:29:30 [adder] summary: Elapsed clock time [H:MM:SS (secs)]: 0:00:00 (0)
+EQY 19:29:30 [adder] summary: Elapsed process time [H:MM:SS (secs)]: 0:00:00 (0)
+EQY 19:29:30 [adder] DONE (PASS, rc=0)

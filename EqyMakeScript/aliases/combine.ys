@@ -1,0 +1,11 @@
+plugin -i /usr/local/bin/../share/yosys/plugins/eqy_combine.so
+read_ilang aliases/gold.il
+uniquify
+hierarchy
+design -stash gold
+read_ilang aliases/gate_recoded.il
+uniquify
+hierarchy
+design -stash gate
+eqy_combine -gold_ids aliases/gold.ids -gate_ids aliases/gate_recoded.ids
+write_ilang aliases/combined.il

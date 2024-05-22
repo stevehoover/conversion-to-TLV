@@ -1,4 +1,4 @@
-module aliases(
+module alia(
   input wire C,
   input wire D,
 

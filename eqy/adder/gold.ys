@@ -1,0 +1,6 @@
+read_verilog -DGOLD adder.v
+prep -top adder
+opt_clean
+check -initdrv
+setundef -undriven -undef
+write_ilang adder/gold.il

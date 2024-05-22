@@ -4,7 +4,7 @@ prep -top aliases
 
 [gate]
 read_verilog -DGATE aliases.s.sv
-prep -top aliases
+prep -top alia
 
 [collect *]
 group sum*

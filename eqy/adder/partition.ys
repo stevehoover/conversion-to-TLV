@@ -1,0 +1,4 @@
+plugin -i /usr/local/bin/../share/yosys/plugins/eqy_partition.so
+read_ilang combined.il
+insbuf -chain
+eqy_partition -matched_ids matched.ids -partition_ids partition.ids

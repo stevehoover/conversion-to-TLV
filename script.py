@@ -109,7 +109,7 @@ def main():
     print(f"Module Name 2: {module_name2}")
 
     # Define the path to the EQY configuration file
-    eqy_config_file = "/home/syedowais/conversion-to-TLV/equivalence.eqy"
+    eqy_config_file = "/home/owais/conversion-to-TLV/equivalence.eqy"
 
     # Execute equivalence checking using EQY
     execute_eqy_commands(verilog1_file, verilog2_file, module_name1, module_name2, eqy_config_file)

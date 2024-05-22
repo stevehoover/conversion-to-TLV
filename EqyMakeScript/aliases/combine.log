@@ -1,0 +1,40 @@
+
+ /----------------------------------------------------------------------------\
+ |  yosys -- Yosys Open SYnthesis Suite                                       |
+ |  Copyright (C) 2012 - 2024  Claire Xenia Wolf <claire@yosyshq.com>         |
+ |  Distributed under an ISC-like license, type "license" to see terms        |
+ \----------------------------------------------------------------------------/
+ Yosys 0.41+8 (git sha1 1a54e8d47, clang++ 14.0.0-1ubuntu1.1 -fPIC -Os)
+
+-- Executing script file `aliases/combine.ys' --
+
+1. Executing RTLIL frontend.
+Input filename: aliases/gold.il
+
+2. Executing UNIQUIFY pass (creating unique copies of modules).
+Created 0 unique modules.
+
+3. Executing HIERARCHY pass (managing design hierarchy).
+
+3.1. Analyzing design hierarchy..
+Top module:  \aliases
+
+3.2. Analyzing design hierarchy..
+Top module:  \aliases
+Removed 0 unused modules.
+
+4. Executing RTLIL frontend.
+Input filename: aliases/gate_recoded.il
+
+5. Executing UNIQUIFY pass (creating unique copies of modules).
+Created 0 unique modules.
+
+6. Executing HIERARCHY pass (managing design hierarchy).
+
+6.1. Analyzing design hierarchy..
+Top module:  \alia
+
+6.2. Analyzing design hierarchy..
+Top module:  \alia
+Removed 0 unused modules.
+ERROR: Top modules of gold and gate do not have the same name.

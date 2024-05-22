@@ -1,0 +1,2 @@
+adder adder.sum : sum[0]
+adder adder.carry : carry[0]
