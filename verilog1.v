@@ -8,3 +8,4 @@ module verilog1(
    assign y = a & b;
 endmodule
 ```
+// prompt 2 is run and add clock
