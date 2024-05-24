@@ -662,7 +662,11 @@ def run_fev():
   print("==================")
   diff_status = os.system("diff " + orig_file_name + " " + working_verilog_file_name)
   print("==================")
-  
+  print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+  print(orig_file_name)
+  print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+  print(working_verilog_file_name)
+  print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
   ret = False
   # Run FEV.
   if diff_status == 0:
