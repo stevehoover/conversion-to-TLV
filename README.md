@@ -20,6 +20,10 @@ A command-line Python script (`convert.py`) controls the interactions with the L
   - Update the code.
   - If the LLM indicated that it's update was incomplete, prompt again for more modifications and FEV, repeating until complete.
   - Move on to the next step, and repeat.
+- Run EQY to check the equivalence of two code orignol and modified code.
+- If EQY pass.
+  - make directory eqy_configuration_updated and eqy_configuration_updated.eqy file.
+  - Move on to the next step, and repeat.
 
 If any step in the process fails, the script will ask either the LLM or the human for assistance.
 
