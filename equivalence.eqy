@@ -7,10 +7,10 @@ read_verilog -DGATE <MODIFIED_VERILOG_FILE>
 prep -top {MODULE_NAME2}
 
 [collect *]
-group count*
+
 
 [strategy simple]
 use sat
-depth 100
+depth 10
 
 

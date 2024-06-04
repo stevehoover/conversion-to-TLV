@@ -1,6 +1,0 @@
-read_verilog -DGATE adder.v
-prep -top adder
-opt_clean
-check -initdrv
-setundef -undriven -undef
-write_ilang adder/gate.il

@@ -1,7 +1,0 @@
-EQY 15:12:01 [aliases] read_gold: starting process "yosys -ql aliases/gold.log aliases/gold.ys"
-EQY 15:12:01 [aliases] read_gold: finished (returncode=0)
-EQY 15:12:01 [aliases] read_gate: starting process "yosys -ql aliases/gate.log aliases/gate.ys"
-EQY 15:12:01 [aliases] read_gate: finished (returncode=0)
-EQY 15:12:01 [aliases] combine: starting process "yosys -ql aliases/combine.log aliases/combine.ys"
-EQY 15:12:01 [aliases] combine: ERROR: Top modules of gold and gate do not have the same name.
-EQY 15:12:01 [aliases] combine: finished (returncode=1)

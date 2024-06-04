@@ -1,6 +1,0 @@
-read_verilog -DGOLD aliases.sv
-prep -top aliases
-opt_clean
-check -initdrv
-setundef -undriven -undef
-write_ilang aliases/gold.il

@@ -1,6 +1,0 @@
-read_verilog -DGATE aliases.s.sv
-prep -top alia
-opt_clean
-check -initdrv
-setundef -undriven -undef
-write_ilang aliases/gate.il
