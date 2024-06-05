@@ -464,9 +464,8 @@ repo_dir = os.path.dirname(os.path.realpath(__file__))
 # Find FEV script.
 #
 
-fev_script = repo_dir + "/" + "fev.sby"
-if not os.path.exists(fev_script):
-  print("Error: Conversion repository does not contain " + fev_script + ".")
+if not os.path.exists(repo_dir + "/fev.sby") or not os.path.exists(repo_dir + "/fev.eqy"):
+  print("Error: Conversion repository does not contain fev.sby or fev.eqy.")
   usage()
 
 # Read prompts.json.
@@ -493,7 +492,11 @@ def is_verilog(filename):
 
 # Run SymbiYosys.
 def run_sby():
-  subprocess.run(["sby", "-f", "tmp/fev.sby"])
+  return subprocess.run(["sby", "-f", "tmp/fev.sby"])
+
+# Run EQY.
+def run_eqy():
+  return subprocess.run(["eqy", "-f", "tmp/fev.eqy"])
 
 # Run FEV using Yosys on the given top-level module name and orig and modified files.
 # Return the subprocess.CompletedProcess of the FEV command.
@@ -648,7 +651,7 @@ def most_recent(fn, mod=None):
 
 # Run FEV against the last successfully FEVed code (if not in this refactoring step, the the original code for this step).
 # Update status.json.
-def run_fev():
+def run_fev(use_eqy = True):
   checkpoint_if_pending()
 
   status = readStatus()
@@ -671,18 +674,23 @@ def run_fev():
   else:
     # Run FEV.
 
-    # Create fev.sby.
+    # Create fev.sby or fev.eqy.
+    fev_file = "fev.eqy" if use_eqy else "fev.sby"
     # This is done by copying in <repo>/fev.sby and substituting "{MODULE_NAME}", "{ORIGINAL_FILE}", and "{MODIFIED_FILE}" using sed.
-    os.system(f"cp {fev_script} tmp/fev.sby")
-    os.system(f"sed -i 's/<MODULE_NAME>/{module_name}/g' tmp/fev.sby")
+    os.system(f"cp " + repo_dir + "/" + fev_file + " tmp")
+    os.system(f"sed -i 's/<MODULE_NAME>/{module_name}/g' tmp/" + fev_file)
     # These paths must be absolute.
-    os.system(f"sed -i 's|<ORIGINAL_FILE>|{os.getcwd()}/{orig_file_name}|g' tmp/fev.sby")
-    os.system(f"sed -i 's|<MODIFIED_FILE>|{os.getcwd()}/{working_verilog_file_name}|g' tmp/fev.sby")
+    os.system(f"sed -i 's|<ORIGINAL_FILE>|{os.getcwd()}/{orig_file_name}|g' tmp/" + fev_file)
+    os.system(f"sed -i 's|<MODIFIED_FILE>|{os.getcwd()}/{working_verilog_file_name}|g' tmp/" + fev_file)
     # To run the above manually in bash, as a one-liner from the conversion directory, providing <MODULE_NAME>, <ORIGINAL_FILE>, and <MODIFIED_FILE>:
     #   cp ../fev.sby fev.sby && sed -i 's/<MODULE_NAME>/<module_name>/g' fev.sby && sed -i "s|<ORIGINAL_FILE>|$PWD/<original_file>|g" fev.sby && sed -i "s|<MODIFIED_FILE>|$PWD/<modified_file>|g" fev.sby
 
-    #run_sby()
-    proc = run_yosys_fev(module_name, orig_file_name, working_verilog_file_name)
+    if use_eqy:
+      # Run FEV using EQY.
+      proc = run_eqy()
+    else:
+      #proc = run_sby()
+      proc = run_yosys_fev(module_name, orig_file_name, working_verilog_file_name)
     # Check for success.
     #passed = fev_passed()
     passed = proc.returncode == 0
@@ -912,7 +920,7 @@ while True:
   # Process user commands until a modification is accepted or rejected.
   while True:
     # Get the user's command as a single key press (without <Enter>) using pynput library.
-    key = get_command(["l", "f", "y", "s", "h", "x", "u", "U", "c", "?"])
+    key = get_command(["l", "e", "f", "y", "s", "h", "x", "u", "U", "c", "?"])
 
     # Process the user's command.
     if key == "l":
@@ -930,8 +938,10 @@ while True:
         with open("messages.json") as message_file:
           with open(working_verilog_file_name) as verilog_file:
             run_llm(json.loads(message_file.read()), verilog_file.read())
+    elif key == "e":
+      run_fev(True)
     elif key == "f":
-      run_fev()
+      run_fev(False)
     elif key == "y":
       status = readStatus()
       # Can only accept changes that have been FEVed.
