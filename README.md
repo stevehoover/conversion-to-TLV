@@ -29,7 +29,7 @@ After refactoring the Verilog, the Verilog can be converted to TL-Verilog and re
 
 This flow chart illustrates the conversion process provided by `convert.py`, though it should be taken with a grain of salt, as this is an actively-changing project, and this diagram may not be maintained.
 
-![Conversion Flow Image](./conversion_flow.png)
+![Conversion Flow Image](./conversions_flow.png)
 
 ## Status
 
