@@ -74,6 +74,15 @@
 # To begin each step, the user is given instructions and prompted for input.
 # The user makes edits and enters commands until a candidate is accepted or rejected, and the process repeats.
 
+### eqy ###
+# To ensure the functional equivalence of Verilog files, we compare an original Verilog file with its modified version. This is accomplished using the Equivalence Check tool, "Equivalence.eqy".
+# The original Verilog file is located in history/#/mod_#.
+# The modified Verilog file is located in CONVERSION-TO-TLV/.
+# Use "Equivalence.eqy" to perform the equivalence check between the original and modified Verilog files.
+# Upon running the equivalence check, an eqy_configuration_updated directory will be created containing all the updated configuration files.
+# The eqy_configuration_updated.eqy file will be created inside the eqytmp/ directory.
+# After executing a new equivalence check, the previous eqy_configuration_updated configuration folder will be moved to the eqytmp/ directory to preserve past configurations.
+
 import os
 import subprocess
 from openai import OpenAI
@@ -86,6 +95,7 @@ from select import select
 from abc import ABC, abstractmethod
 import json
 import re
+import shutil
 
 ###################################
 # Abstract Base Class for LLM API #
@@ -499,7 +509,7 @@ def run_sby():
 # Return the subprocess.CompletedProcess of the FEV command.
 def run_yosys_fev(module_name, orig_file_name, modified_file_name):
   env = {"TOP_MODULE": module_name, "ORIGINAL_VERILOG_FILE": orig_file_name, "MODIFIED_VERILOG_FILE": modified_file_name}
-  return subprocess.run(["/home/steve/repos/warp-v/formal/env/bin/yosys", repo_dir + "/fev.tcl"], env=env)
+  return subprocess.run(["/home/owais/yosys/yosys", repo_dir + "/fev.tcl"], env=env)
 
 # Functions that determine the state of the refactoring step based on the state of the files.
 # TODO: replace?
@@ -728,7 +738,93 @@ def show_diff(mod = None, prev_mod = None):
   print("==================")
   return True
 
+def execute_eqy_commands(verilog1_file, verilog2_file, module_name1, module_name2, eqy_config_file):
+    # Create the temp directory
+    temp_directory = "eqytmp"
+    if os.path.exists(temp_directory):
+        shutil.rmtree(temp_directory)
+    os.makedirs(temp_directory)
+    
+    with open(eqy_config_file, "r") as f:
+        eqy_config_content = f.read()
 
+    # Replace placeholders in the configuration content
+    eqy_config_content = eqy_config_content.replace("{MODULE_NAME1}", module_name1)
+    eqy_config_content = eqy_config_content.replace("{MODULE_NAME2}", module_name2)
+    eqy_config_content = eqy_config_content.replace("<ORIGINAL_VERILOG_FILE>", os.path.abspath(verilog2_file))
+    eqy_config_content = eqy_config_content.replace("<MODIFIED_VERILOG_FILE>", os.path.abspath(verilog1_file))
+
+    # Define the name of the updated EQY configuration file within the temp_directory
+    updated_eqy_config_file = os.path.join(temp_directory, "eqy_configuration_updated.eqy")
+
+    with open(updated_eqy_config_file, "w") as f:
+        f.write(eqy_config_content)
+
+    # Define the eqy_directory within the temp_directory
+   
+    eqy_directory = os.path.join(temp_directory, "eqy_configuration_updated")
+    
+    # Remove and recreate the eqy_directory
+    if os.path.exists(eqy_directory):
+        shutil.rmtree(eqy_directory)
+        shutil.rmtree('eqy_configuration_updated')
+        
+    os.makedirs(eqy_directory)
+   
+    # Move any existing files in the previous eqy_configuration_updated directory to the new one in the temp_directory
+    prev_eqy_directory = "eqy_configuration_updated"
+    if os.path.exists(prev_eqy_directory) and os.path.isdir(prev_eqy_directory):
+        for filename in os.listdir(prev_eqy_directory):
+            src_file = os.path.join(prev_eqy_directory, filename)
+            dest_file = os.path.join(eqy_directory, filename)
+            shutil.move(src_file, dest_file)
+        # Remove the now empty old_eqy_directory
+        shutil.rmtree(prev_eqy_directory)
+
+    # Execute the EQY command
+    try:
+        subprocess.run(["eqy", updated_eqy_config_file], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing EQY command: {e}")
+
+
+# Extract module name of verilog file 
+def extract_module_name(verilog_file):
+    # Regular expression to match the module declaration
+    module_pattern = re.compile(r"^\s*module\s+(\w+)\s*\(")
+    with open(verilog_file, "r") as f:
+        for line in f:
+            # Check if the line matches the module declaration pattern
+            match = module_pattern.match(line)
+            if match:
+                module_name = match.group(1)
+                # print(f"Module Name: {module_name}")
+                return module_name
+
+# Main function to run the EQY command
+def run_eqy():
+    verilog_files = [f for f in os.listdir() if f.endswith(".v")]
+    if not verilog_files:
+        print("Error: No Verilog files found in the current directory.")
+        sys.exit(1)
+    # if current verilog file doenot exist
+    current_verilog_file = working_verilog_file_name
+    if not os.path.exists(current_verilog_file):
+        print(f"Error: Working Verilog file '{current_verilog_file}' not found.")
+        sys.exit(1)
+
+    last_fev_mod = most_recent(lambda mn: (readStatus(mn).get("fev") == "passed"))
+    # if no previous modification with FEV passed is found
+    if last_fev_mod is None:
+        print("Error: No previous modification found with FEV passed.")
+        sys.exit(1)
+    
+    original_verilog_file = mod_path(last_fev_mod) + "/" + working_verilog_file_name
+    
+    module_name1 = extract_module_name(current_verilog_file)
+    module_name2 = extract_module_name(original_verilog_file)
+    eqy_config_file ="/home/owais/conversion-to-TLV/equivalence.eqy"  # give path of eqy file 
+    execute_eqy_commands(current_verilog_file, original_verilog_file, module_name1, module_name2, eqy_config_file)
 
 ##################
 # Terminal input #
@@ -912,7 +1008,7 @@ while True:
   # Process user commands until a modification is accepted or rejected.
   while True:
     # Get the user's command as a single key press (without <Enter>) using pynput library.
-    key = get_command(["l", "f", "y", "s", "h", "x", "u", "U", "c", "?"])
+    key = get_command(["l", "e" , "f", "y", "s", "h", "x", "u", "U", "c", "?"])
 
     # Process the user's command.
     if key == "l":
@@ -932,6 +1028,8 @@ while True:
             run_llm(json.loads(message_file.read()), verilog_file.read())
     elif key == "f":
       run_fev()
+    elif key == "e":  # "e" key for run eqy
+      run_eqy()
     elif key == "y":
       status = readStatus()
       # Can only accept changes that have been FEVed.
