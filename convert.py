@@ -56,7 +56,14 @@
 #
 # <repo>/prompts.json contains the default prompts used for refactoring steps as a JSON array of objects with the following fields:
 #   - desc: a brief description of the refactoring step
+#   - backgroud: (opt) background information that may be relevant to this refactoring step
 #   - prompt: prompt string
+#   - must_produce: (opt) an array of strings representing sticky fields that the LLM must produce in its response
+#   - may_produce: (opt) an array of strings representing sticky fields that the LLM may produce in its response.
+#   - if: (opt) an object with fields that represent values of sticky fields; if given and any match, this prompt will be used ("" matches undefined)
+#   - unless: (opt) an object with fields that represent values of sticky fields; if given, unless all match, this prompt will be used ("" matches undefined)
+#   - needs: (opt) an array of strings representing sticky fields whose values are to be reported in the prompt
+#   - consumes: (opt) an array of strings representing sticky fields that are consumed by this prompt
 #
 # When launched, this script first determines the current state of the conversions process. This state is:
 #   - The current candidate:
@@ -127,7 +134,8 @@ class MessageBundler:
   #     "notes": "These are notes.",
   #     "issues": "These are issues.",
   #     "modified": true,
-  #     "incomplete": true
+  #     "incomplete": true,
+  #     "plan": "Since changes are incomplete, this is the plan for completing the step."
   #   }
   @abstractmethod
   def content_to_obj(self, content):
@@ -209,8 +217,7 @@ class OpenAI_API(LLM_API):
     return response_str
 
 # Response fields.
-sticky_response_fields = {"clock", "reset", "assertion"}    # ("incomplete" is also sticky, but only between LLM runs, so it has special treatment.)
-legal_response_fields = sticky_response_fields | {"overview", "verilog", "modified", "incomplete", "issues", "notes", "plan"}
+response_fields = {"overview", "verilog", "notes", "issues", "modified", "incomplete", "plan"}    # ("incomplete" is sticky between LLM runs, so it has special treatment.)
 class PseudoMarkdownMessageBundler(MessageBundler):
   # Convert the given object to a pseudo-Markdown format. Markdown syntax is familiar to the LLM, and fields can be
   # provided without any awkward escaping and other formatting, as described in default_system_message.txt.
@@ -300,7 +307,7 @@ class PseudoMarkdownMessageBundler(MessageBundler):
         field = field.lower()
           
         # Check for legal field name.
-        if field not in legal_response_fields:
+        if field not in response_fields | set(prompts[prompt_id].get("must_produce", [])) | set(prompts[prompt_id].get("may_produce", [])):
           print("Warning: The following non-standard field was found in the response:")
           print(field)
 
@@ -381,9 +388,14 @@ def run_llm(messages, verilog):
     response_obj["modified"] = True
     print("Warning: API response is missing \"modified\" field. Assuming \"modified\" is True.")
 
+  # Check that this prompt produces are required fields.
   if (response_obj.get("modified", False) and "verilog" not in response_obj) or "modified" not in response_obj:
     print("Error: API response fields are incomplete or inconsistent.")
     sys.exit(1)
+  for field in prompts[prompt_id].get("must_produce", []):
+    if field not in response_obj:
+      print("Error: API response is missing required field: " + field)
+      sys.exit(1)
 
   # Confirm.
   print("")
@@ -434,8 +446,8 @@ def run_llm(messages, verilog):
     # Reflect FEV and compile status from prior checkpoint.
     status["compile"] = orig_status.get("compile")
     status["fev"] = orig_status.get("fev")
-  # Apply sticky fields to status.
-  for field in sticky_response_fields:
+  # Apply combination of must_produce and may_produce fields to status.
+  for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
     if field in response_obj:
       status[field] = response_obj[field]
   checkpoint(status)
@@ -523,12 +535,13 @@ def diff(file1, file2):
 # Sticky status is applied from current status. Status["incomplete"] will be carried over from the prior checkpoint for non-LLM updates.
 def checkpoint(status):
   global mod_num
-  # Carry over sticky status from the prior checkpoint.
-  for field in sticky_response_fields:
-    if field not in status and field in readStatus():
-      status[field] = readStatus()[field]
-  if status.get("by") != "llm" and not (readStatus().get("incomplete") is None):
-    status["incomplete"] = readStatus()["incomplete"]
+  # Carry over status from the prior checkpoint that is sticky (not in response_fields).
+  old_status = readStatus()
+  for field in old_status:
+    if field not in status and field not in response_fields:
+      status[field] = old_status[field]
+  if status.get("by") != "llm" and not (old_status.get("incomplete") is None):
+    status["incomplete"] = old_status["incomplete"]
   
   # Capture the current Verilog file.
   mod_num += 1
@@ -578,13 +591,13 @@ def print_prompt():
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + " and/or prompt.txt.")
   print("    - l: (optional) Run the LLM step. (If this fails or is incomplete, make any further manual edits and try again.)")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + ". (You may use \"f\" to run FEV first.)")
-  print("    - f: Run FEV. (If this fails, make further manual Verilog edits and try again.)")
+  print("    - e/f: Run FEV (EQY/Yosys). (If this fails, make further manual Verilog edits and try again.)")
   print("    - y: Accept the current code as the completion of this refactoring step.")
   print("  (At any time: use \"n\" to undo changes; \"h\" for help; \"x\" to exit.)")
   print("  ")
   print("  Enter one of the following commands:")
   print("    l: LLM. Send the current prompt.txt to the LLM....Run this refactoring step in ChatGPT-4/Claude2 (if LLM not already completed).")
-  print("    f: Run FEV on the current code.")
+  print("    e/f: Run FEV (EQY/Yosys) on the current code.")
   print("    y: Yes. Accept the current code as the completion of this refactoring step (if FEV already run and passed).")
   print("    u: Undo. Revert to a previous version of the code.")
   print("    U: Redo. Reapply a reverted code change (possible until next modification or exit).")
@@ -605,19 +618,42 @@ def init_refactoring_step():
   refactoring_step += 1
   mod_num = -1
 
-  # Initialize the prompt.
-  prompt_id += 1
+  # Find the next prompt that should be executed.
+  ok = False
+  while not ok:
+    prompt_id += 1
+
+    # Check if conditions.
+    if_ok = True     # Prompt is okay to execute based on "if" conditions.
+    if "if" in prompts[prompt_id]:
+      if_ok = False
+      for field in prompts[prompt_id]["if"]:
+        if prompts[prompt_id]["if"][field] == status.get(field, ""):
+          if_ok = True
+    
+    # Check unless conditions.
+    unless_ok = True # Prompt is okay to execute based on "unless" conditions.
+    if "unless" in prompts[prompt_id]:
+      unless_ok = False
+      for field in prompts[prompt_id]["unless"]:
+        if prompts[prompt_id]["unless"][field] != status.get(field, ""):
+          unless_ok = True
+    
+    ok = if_ok or unless_ok
+  
+  # Update state in files.
+
+  # Write prompt_id.txt.
   with open("prompt_id.txt", "w") as file:
     file.write(str(prompt_id))
-
   # Make history/# directory and populate it.
   os.mkdir("history/" + str(refactoring_step))
   os.system("cp prompt_id.txt history/" + str(refactoring_step) + "/")
   # Also, create an initial mod_0 directory populated with initial verilog and status.json indicating initial code.
   status = { "initial": True, "fev": "passed" }
   # Apply sticky status from last refactoring step.
-  for field in sticky_response_fields:
-    if field in old_status:
+  for field in old_status:
+    if not field in response_fields:
       status[field] = old_status[field]
   checkpoint(status)
   # (mod_num now 0)
@@ -627,9 +663,20 @@ def init_refactoring_step():
     # Read the system message from <repo>/default_system_message.txt.
     with open(repo_dir + "/default_system_message.txt") as file:
       system = file.read()
-    with open("messages.json", "w") as file:
-      message = message_bundler.obj_to_request({'prompt': prompts[prompt_id]["prompt"]})
-      json.dump(llm_api.initPrompt(system, message), file, indent=4)
+
+    # Initialize messages.json.
+    with open("messages.json", "w") as message_file:
+      prompt = prompts[prompt_id]["prompt"]
+      # Add "needs" fields to the prompt.
+      if "needs" in prompts[prompt_id]:
+        prompt += "\n\n" + "Note that the following attributes have been determined about the Verilog code:"
+        for field in prompts[prompt_id]["needs"]:
+          prompt += "\n   " + field + ": " + status.get(field, "")
+      message = message_bundler.obj_to_request({'prompt': prompt})
+      # If prompt has a "background" field, add it to the system message.
+      if "background" in prompts[prompt_id]:
+        system += "\n\nRelevant to this refactoring step:\n\n" + prompts[prompt_id]["background"]
+      json.dump(llm_api.initPrompt(system, message), message_file, indent=4)
   except Exception as e:
     print("Error: Failed to initialize messages.json due to: " + str(e))
     sys.exit(1)
