@@ -61,7 +61,9 @@
 #   - must_produce: (opt) an array of strings representing sticky fields that the LLM must produce in its response
 #   - may_produce: (opt) an array of strings representing sticky fields that the LLM may produce in its response.
 #   - if: (opt) an object with fields that represent values of sticky fields; if given and any match, this prompt will be used ("" matches undefined)
+#         Each field may have an array value rather than a string, in which case any array value may match.
 #   - unless: (opt) an object with fields that represent values of sticky fields; if given, unless all match, this prompt will be used ("" matches undefined)
+#             Each field may have an array value rather than a string, in which case any array value may match.
 #   - needs: (opt) an array of strings representing sticky fields whose values are to be reported in the prompt
 #   - consumes: (opt) an array of strings representing sticky fields that are consumed by this prompt
 #
@@ -93,6 +95,7 @@ from select import select
 from abc import ABC, abstractmethod
 import json
 import re
+import shutil
 
 ###################################
 # Abstract Base Class for LLM API #
@@ -105,12 +108,17 @@ class LLM_API(ABC):
   def __init__(self):
     pass
 
-  def setModel(self, model):
+  def setDefaultModel(self, model):
+    self.validateModel(model)
     self.model = model
+
+  def validateModel(self, model):
+    print("Error: Model " + model + " not found.")
+    exit(1)  
 
   # Run the LLM API on the prompt file, producing a (TL-)Verilog file.
   @abstractmethod
-  def run(self):
+  def run(self, messages, verilog, model):
     pass
 
 # A class responsible for bundling messages objects into text and visa versa.
@@ -121,6 +129,7 @@ class MessageBundler:
   # The object format is:
   #   {
   #     "desc": "This is a description.",
+  #     "background": (optional) "This is background information.",
   #     "prompt": "This is a prompt.\n\nIt has multiple lines."
   #   }
   @abstractmethod
@@ -150,7 +159,7 @@ class MessageBundler:
 
 class OpenAI_API(LLM_API):
   name = "OpenAI"
-  model = "gpt-3.5-turbo"
+  model = "gpt-3.5-turbo"   # default model (can be overridden in run(..))
 
   def __init__(self):
     super().__init__()
@@ -174,14 +183,14 @@ class OpenAI_API(LLM_API):
     
     # Init OpenAI.
     self.client = OpenAI() if self.org_id is None else OpenAI(organization=self.org_id)
-    #self.models = self.client.models.list()
+    self.models = self.client.models.list()
   
-  def setModel(self, model):
-    # TODO:...
-    #if model not in self.models.data...:
-    #  print("Error: Model " + model + " not found.")
-    #  sys.exit(1)
-    self.model = model
+  def validateModel(self, model):
+    # Get the data for the model (or None if not found)
+    model_data = next((item for item in self.models.data if hasattr(item, 'id') and item.id == model), None)
+    if model_data is None:
+      print("Error: Model " + model + " not found.")
+      sys.exit(1)
 
   # Set up the initial messages object for the current refactoring step based on the given system message and prompt
   # (from this step's prompt.txt).
@@ -193,15 +202,19 @@ class OpenAI_API(LLM_API):
 
 
   # Run the LLM API on the messages.json file appended with the verilog code, returning the response string from the LLM.
-  def run(self, messages, verilog):
+  def run(self, messages, verilog, model=None):
+    if model == None:
+      model = self.model
+    self.validateModel(model)
+    
     # Add verilog to the last message.
     message_bundler.add_verilog(messages, verilog)
 
     # Call the API.
-    print("Calling " + self.model + "...")
+    print("Calling " + model + "...")
     # TODO: Not supported in ChatGPT-3.5: response_format = {"type": "json_object"}
-    api_response = self.client.chat.completions.create(model=self.model, messages=messages, max_tokens=500, temperature=0.0)
-    print("Response received from " + self.model)
+    api_response = self.client.chat.completions.create(model=model, messages=messages, max_tokens=500, temperature=0.0)
+    print("Response received from " + model)
 
     # Parse the response.
     try:
@@ -218,24 +231,23 @@ class OpenAI_API(LLM_API):
 
 # Response fields.
 response_fields = {"overview", "verilog", "notes", "issues", "modified", "incomplete", "plan"}    # ("incomplete" is sticky between LLM runs, so it has special treatment.)
+status_fields = {"by", "compile", "fev", "incomplete", "modified", "accepted"}
 class PseudoMarkdownMessageBundler(MessageBundler):
   # Convert the given object to a pseudo-Markdown format. Markdown syntax is familiar to the LLM, and fields can be
   # provided without any awkward escaping and other formatting, as described in default_system_message.txt.
   # Example JSON:
-  #   {"instructions": "These are instructions.", "verilog": "module...\nendmodule"}
+  #   {"prompt": "Do this...", "verilog": "module...\nendmodule"}
   # Example output:
-  #   ## Instructions
+  #   ## prompt
   #   
-  #   These are instructions.
+  #   Do this...
   #   
-  #   ## Verilog
+  #   ## verilog
   #   
-  #   ```
   #   module...
   #   endmodule
-  #   ```
   def obj_to_request(self, obj):
-    content = "# Request\n\n"
+    content = ""
     separator = ""
     for key in obj:
       # Convert (single-word) key to title case.
@@ -249,16 +261,6 @@ class PseudoMarkdownMessageBundler(MessageBundler):
   def response_to_obj(self, response):
     # Parse the response, line by line, looking for second-level Markdown header lines.
     lines = response.split("\n")
-    # Parse "# Response" header.
-    if not re.match(r"^# Response$", lines[0]):
-      print("Warning: API response is missing \"# Response\" header.")
-    else:
-      lines = lines[1:]
-      if not re.match(r"^\s*$", lines[0]):
-        print("Warning: API response is missing blank line after \"# Response\" header.")
-      else:
-        lines = lines[1:]
-    
     l = 0
     fields = {}
     field = None
@@ -282,25 +284,19 @@ class PseudoMarkdownMessageBundler(MessageBundler):
           print("Error: The following body text was found before the first header and will be ignored:")
           print(body)
       else:
-        # "verilog" field should be in block quotes. Confirm, and remove them.
-        if field == "verilog":
-          body, n = re.subn(r"^```\n(.*)\n+```$", r"\1\n", body, flags=re.DOTALL)
-          if n != 1:
-            print("Warning: The \"Verilog\" field of the response was not contained in block quotes and may be malformed.")
-
-        # Capture the previous field.
         # Boolean responses.
         if body == "true" or body == "false":
           body = body == "true"
+        # Capture the field body.
         fields[field] = body
         
       if l < len(lines):
         # Parse the header line with a regular expression.
         field = re.match(r"## +(\w+)", lines[l]).group(1)
 
-        # The field name should be a single upper-case word.
-        if not re.match(r"[A-Z][a-z]*", field):
-          print("Error: The following non-standard field was found in the response:")
+        # The field name should be a lower-case words with underscore delimitation.
+        if not re.match(r"[a-z_]*", field):
+          print("Warning: The following malformed field name was found in the response:")
           print(field)
 
         # Convert field name to lower case.
@@ -321,7 +317,7 @@ class PseudoMarkdownMessageBundler(MessageBundler):
   # verilog: The current Verilog file contents.
   def add_verilog(self, messages, verilog):
     # Add verilog to the last message.
-    messages[-1]["content"] += "\n\n## Verilog\n\n```" + verilog + "```"
+    messages[-1]["content"] += "\n\n## verilog\n\n" + verilog
 
 
 def changes_pending():
@@ -337,7 +333,7 @@ def checkpoint_if_pending():
 # Checkpoint any manual edits, run LLM, and checkpoint the result if successful. Return nothing.
 # messages: The messages.json object in OpenAI format.
 # verilog: The current Verilog file contents.
-def run_llm(messages, verilog):
+def run_llm(messages, verilog, model="gpt-3.5-turbo"):
   checkpoint_if_pending()
 
   # Run the LLM, passing the messages.json and verilog file contents.
@@ -353,17 +349,14 @@ def run_llm(messages, verilog):
   # If there is already a response, prompt the user about possibly reusing it.
   ch = "n"
   if os.path.exists("llm_response.txt"):
-    print("There is already a response to this prompt. Would you like to reuse it [y/N]?")
-    print("> ", end="")
-    ch = getch()
-    print("")
+    ch = prompt("There is already a response to this prompt. Would you like to reuse it [y/N]?")
   if ch == "y":
     # Use llm_response.txt.
     with open("llm_response.txt") as file:
       response_str = file.read()
   else:
     # Call the API.
-    response_str = llm_api.run(messages, verilog)
+    response_str = llm_api.run(messages, verilog, model)
     # Write llm_response.txt.
     with open("llm_response.txt", "w") as file:
       file.write(response_str)
@@ -410,56 +403,65 @@ def run_llm(messages, verilog):
     print("-------------")
     print(code)
     print("-------------")
-    # Repare the response.
+    # Repair the response.
     response_obj["verilog"] = code
   print("")
-  press_any_key()
 
   if "notes" in response_obj:
     print("Notes:\n   " + response_obj["notes"].replace("\n", "\n   ") + "\n")
 
+  # Get working code.
+  working_code = ""
+  with open(working_verilog_file_name) as file:
+    working_code = file.read()
+  
+  # Correct "modified" if necessary.
   modified = response_obj["modified"]  # As reported by the LLM, and updated to reflect reality.
-  if modified:
-    code = response_obj["verilog"]
-    # Get working code.
-    with open(working_verilog_file_name) as file:
-      working_code = file.read()
-
-    # Write the resulting Verilog file.
-    with open(working_verilog_file_name, "w") as file:
-      file.write(code)
-    
-    # Confirm that there were in fact changes.
-    if code == working_code:
-      print("Note: No changes were made, though the API response indicates otherwise. (Checkpointing anyway.)")
+  if modified != ((code != None) and (code != working_code)):
+    if modified:
+      print("Note: API response indicates code was modified, but the code is unchanged.")
+      print("      No big deal. Correcting. (Will checkpoint anyway.)")
       modified = False
     else:
-      print("Checkpointing changes.")
-  else:
-    # LLM says no changes.
-    print("No changes were made for this refactoring step. (Checkpointing anyway.)")
+      print("Note: API response includes code changes but reports \"modified\": false. Correcting.")
+      modified = True
   
-  # Checkpoint, whether modified or not.
-  orig_status = readStatus()
-  status = { "by": "llm", "incomplete": response_obj.get("incomplete", False), "modified": modified }
-  if not modified:
-    # Reflect FEV and compile status from prior checkpoint.
-    status["compile"] = orig_status.get("compile")
-    status["fev"] = orig_status.get("fev")
-  # Apply combination of must_produce and may_produce fields to status.
-  for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
-    if field in response_obj:
-      status[field] = response_obj[field]
-  checkpoint(status)
-
-
-  # Response accepted, so delete llm_response.txt.
-  os.remove("llm_response.txt")
   if "issues" in response_obj:
     print(llm_api.model + " reports the following issues:")
     print("   " + response_obj["issues"].replace("\n", "\n   ") + "\n")
   
-  return response_obj
+  ch = prompt("Accept this response (answer before making manual edits)?", options=["y", "n"], default="y")
+
+  if ch == "y":
+    if modified:
+
+      # Write the resulting Verilog file.
+      with open(working_verilog_file_name, "w") as file:
+        file.write(code)
+      
+      print("\nCheckpointing changes.")
+    else:
+      # LLM says no changes.
+      print("No changes were made for this refactoring step. (Checkpointing anyway.)")
+    
+    # Checkpoint, whether modified or not.
+    orig_status = readStatus()
+    status = { "by": "llm", "incomplete": response_obj.get("incomplete", False), "modified": modified }
+    if not modified:
+      # Reflect FEV and compile status from prior checkpoint.
+      status["compile"] = orig_status.get("compile")
+      status["fev"] = orig_status.get("fev")
+    # Apply combination of must_produce and may_produce fields to status.
+    for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
+      if field in response_obj:
+        status[field] = response_obj[field]
+    checkpoint(status)
+
+
+    # Response accepted, so delete llm_response.txt.
+    os.remove("llm_response.txt")
+  else:
+    print("Response rejected. No changes made.")
 
 
 #############
@@ -514,7 +516,7 @@ def run_eqy():
 # Return the subprocess.CompletedProcess of the FEV command.
 def run_yosys_fev(module_name, orig_file_name, modified_file_name):
   env = {"TOP_MODULE": module_name, "ORIGINAL_VERILOG_FILE": orig_file_name, "MODIFIED_VERILOG_FILE": modified_file_name}
-  return subprocess.run(["/home/steve/repos/warp-v/formal/env/bin/yosys", repo_dir + "/fev.tcl"], env=env)
+  return subprocess.run(["yosys", repo_dir + "/fev.tcl"], env=env)
 
 # Functions that determine the state of the refactoring step based on the state of the files.
 # TODO: replace?
@@ -531,16 +533,19 @@ def diff(file1, file2):
   return os.system("diff -q '" + file1 + "' '" + file2 + "' > /dev/null") != 0
 
 # Capture Verilog file in a new history/#/mod_#/, and if this was an LLM modification, capture messages.json.
-#  status: The status to save with the checkpoint.
+#  status: The status to save with the checkpoint, updated as new status.
+#  old_status: For use only for the first checkpoint of a refactoring step. This is the status from the prior refactoring step.
 # Sticky status is applied from current status. Status["incomplete"] will be carried over from the prior checkpoint for non-LLM updates.
-def checkpoint(status):
+def checkpoint(status, old_status = None):
   global mod_num
-  # Carry over status from the prior checkpoint that is sticky (not in response_fields).
-  old_status = readStatus()
+  # Carry over status from the prior checkpoint that is sticky (not in status_fields).
+  if mod_num >= 0:
+    old_status = readStatus()
   for field in old_status:
-    if field not in status and field not in response_fields:
+    if field not in status and field not in status_fields:
       status[field] = old_status[field]
-  if status.get("by") != "llm" and not (old_status.get("incomplete") is None):
+  # "incomplete" is sticky within a refactoring step or updated by LLM runs.
+  if mod_num >= 0 and status.get("by") != "llm" and not (old_status.get("incomplete") is None):
     status["incomplete"] = old_status["incomplete"]
   
   # Capture the current Verilog file.
@@ -583,20 +588,19 @@ def writeStatus(status):
 
 # Print the main user prompt.
 def print_prompt():
-  print("The next refactoring step (" + str(refactoring_step) + ") for the LLM uses prompt " + str(prompt_id) + ":\n")
-  # Output the README for the current prompt ID, indented by 5 spaces.
+  print("The current refactoring step (" + str(refactoring_step) + ") for the LLM uses prompt " + str(prompt_id) + ":\n")
   print("   | " + prompts[prompt_id]["desc"].replace("\n", "\n   | "))
   print("  ")
   print("  Make edits and enter command characters until a candidate is accepted or rejected. Generally, the sequence is:")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + " and/or prompt.txt.")
-  print("    - l: (optional) Run the LLM step. (If this fails or is incomplete, make any further manual edits and try again.)")
+  print("    - l/L: (optional) Run the LLM step (gpt-3.5-turbo/gpt-4-turbo). (If this fails or is incomplete, make any further manual edits and try again.)")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + ". (You may use \"f\" to run FEV first.)")
   print("    - e/f: Run FEV (EQY/Yosys). (If this fails, make further manual Verilog edits and try again.)")
   print("    - y: Accept the current code as the completion of this refactoring step.")
   print("  (At any time: use \"n\" to undo changes; \"h\" for help; \"x\" to exit.)")
   print("  ")
   print("  Enter one of the following commands:")
-  print("    l: LLM. Send the current prompt.txt to the LLM....Run this refactoring step in ChatGPT-4/Claude2 (if LLM not already completed).")
+  print("    l/L: LLM. Send the current prompt.txt to the LLM....Run this refactoring step in ChatGPT-4/Claude2 (if LLM not already completed).")
   print("    e/f: Run FEV (EQY/Yosys) on the current code.")
   print("    y: Yes. Accept the current code as the completion of this refactoring step (if FEV already run and passed).")
   print("    u: Undo. Revert to a previous version of the code.")
@@ -605,6 +609,15 @@ def print_prompt():
   print("    h: History. Show a history of recent changes in this refactoring step.")
   print("    ?: Help. Repeat this message.")
   print("    x: Exit.")
+  llm = llm_finished()
+  status = readStatus()
+  fev = status.get("fev") == "passed"
+  if llm or fev:
+    print("  Status:")
+    if llm:
+      print("    The LLM has been run.")
+    if fev:
+      print("    Code has passed FEV.")
 
 # Function to initialize the conversion directory for the next refactoring step.
 def init_refactoring_step():
@@ -628,18 +641,32 @@ def init_refactoring_step():
     if "if" in prompts[prompt_id]:
       if_ok = False
       for field in prompts[prompt_id]["if"]:
-        if prompts[prompt_id]["if"][field] == status.get(field, ""):
-          if_ok = True
+        # If the field is a string, make it an array of one string.
+        if type(prompts[prompt_id]["if"][field]) == str:
+          prompts[prompt_id]["if"][field] = [prompts[prompt_id]["if"][field]]
+        # If any of the values match, the prompt is okay.
+        for value in prompts[prompt_id]["if"][field]:
+          if value == old_status.get(field, ""):
+            if_ok = True
+            break
     
     # Check unless conditions.
     unless_ok = True # Prompt is okay to execute based on "unless" conditions.
     if "unless" in prompts[prompt_id]:
-      unless_ok = False
       for field in prompts[prompt_id]["unless"]:
-        if prompts[prompt_id]["unless"][field] != status.get(field, ""):
-          unless_ok = True
+        # If the field is a string, make it an array of one string.
+        if type(prompts[prompt_id]["unless"][field]) == str:
+          prompts[prompt_id]["unless"][field] = [prompts[prompt_id]["unless"][field]]
+        # If any of the values match, the prompt is not okay.
+        unless_ok = True
+        for value in prompts[prompt_id]["unless"][field]:
+          if value == old_status.get(field, ""):
+            unless_ok = False
+            break
+        if unless_ok:
+          break
     
-    ok = if_ok or unless_ok
+    ok = if_ok and unless_ok
   
   # Update state in files.
 
@@ -651,14 +678,11 @@ def init_refactoring_step():
   os.system("cp prompt_id.txt history/" + str(refactoring_step) + "/")
   # Also, create an initial mod_0 directory populated with initial verilog and status.json indicating initial code.
   status = { "initial": True, "fev": "passed" }
-  # Apply sticky status from last refactoring step.
-  for field in old_status:
-    if not field in response_fields:
-      status[field] = old_status[field]
-  checkpoint(status)
+  checkpoint(status, old_status)
   # (mod_num now 0)
 
   # Initialize messages.json.
+  # TODO: This is specific to the API and should be done only when the API is called? Hmmm... it is done here to enable human edits before the API call.
   try:
     # Read the system message from <repo>/default_system_message.txt.
     with open(repo_dir + "/default_system_message.txt") as file:
@@ -672,10 +696,12 @@ def init_refactoring_step():
         prompt += "\n\n" + "Note that the following attributes have been determined about the Verilog code:"
         for field in prompts[prompt_id]["needs"]:
           prompt += "\n   " + field + ": " + status.get(field, "")
-      message = message_bundler.obj_to_request({'prompt': prompt})
-      # If prompt has a "background" field, add it to the system message.
+      message_obj = {}
+      # If prompt has a "background" field, add it (first) to the message.
       if "background" in prompts[prompt_id]:
-        system += "\n\nRelevant to this refactoring step:\n\n" + prompts[prompt_id]["background"]
+        message_obj["background"] = prompts[prompt_id]["background"]
+      message_obj["prompt"] = prompt
+      message = message_bundler.obj_to_request(message_obj)
       json.dump(llm_api.initPrompt(system, message), message_file, indent=4)
   except Exception as e:
     print("Error: Failed to initialize messages.json due to: " + str(e))
@@ -717,6 +743,8 @@ def run_fev(use_eqy = True):
   # Run FEV.
   if diff_status == 0:
     print("No changes to FEV. Choose a different command.")
+    status["fev"] = "passed"
+    writeStatus(status)
     ret = True
   else:
     # Run FEV.
@@ -817,6 +845,29 @@ def getch():
     set_cooked_mode(sys.stdin.fileno())
   return ch
 
+def prompt(prompt, options=None, default=None):
+  p = prompt
+  if options:
+    p += " [" + "/".join(options) + "]"
+    if default:
+      p += " (default: " + default + ")"
+  print(p)
+  while True:
+    again = False
+    print("> ", end="")
+    ch = getch()
+    print("")
+    # if ch isn't among the options, use default if there is one.
+    if options and ch not in options:
+      if default:
+        ch = default
+      else:
+        print("Error: Invalid input. Try again.")
+        again = True
+    if not again:
+      return ch
+
+
 ## Capture the current terminal settings before setting raw mode
 #default_settings = termios.tcgetattr(sys.stdin)
 ##old_settings = termios.tcgetattr(sys.stdin)
@@ -832,10 +883,8 @@ atexit.register(cleanup)
 # Accept terminal input command character from among the given list.
 def get_command(options):
   while True:
-    print("\nPress one of the following command keys: {}".format(", ".join(options)))
-    print("> ", end="")
-    ch = getch()
     print("")
+    ch = prompt("Press one of the following command keys: " + ", ".join(options))
     if ch not in options:
       print("Error: Invalid key. Try again.")
     else:
@@ -853,9 +902,16 @@ for sig in [signal.SIGABRT, signal.SIGINT, signal.SIGTERM]:
     signal.signal(sig, signal_handler)
 
 # Pause for a key press.
-def press_any_key():
-  print("Press any key to continue...\n> ", end="")
+def press_any_key(note=""):
+  print("Press any key to continue...%s\n>" % note, end="")
   getch()
+
+# Set mod_num to the maximum for the current refactoring step.
+def set_mod_num():
+  global mod_num
+  mod_num = -1
+  while os.path.exists(mod_path(mod_num + 1)):
+    mod_num += 1
 
 
 
@@ -927,9 +983,7 @@ else:
   for step in os.listdir("history"):
     refactoring_step = max(refactoring_step, int(step))
   # Find the current modification number.
-  for dir in os.listdir("history/" + str(refactoring_step)):
-    if dir.startswith("mod_"):
-      mod_num = max(mod_num, int(dir.split("_")[1]))
+  set_mod_num()
 
   # Get the prompt ID from the most recent prompt_id.txt file. Look back through the history directories until/if one is found.
   cn = refactoring_step
@@ -961,30 +1015,36 @@ def actual_mod(mod=None):
 # Perform the next refactoring step until the user exits.
 while True:
 
+  # Determine whether the default_system_message.txt file has been modified after messages.json.
+  if os.path.exists(repo_dir + "/default_system_message.txt") and os.path.exists("messages.json"):
+    if os.path.getmtime(repo_dir + "/default_system_message.txt") > os.path.getmtime("messages.json"):
+      print("Warning: default_system_message.txt has been modified since messages.json.")
+      print("         Use \"u\" (repeated as needed), then \"r\" to reset the current refactoring step to pick up changes.\n")
   # Prompt the user.
   print_prompt()
 
   # Process user commands until a modification is accepted or rejected.
   while True:
     # Get the user's command as a single key press (without <Enter>) using pynput library.
-    key = get_command(["l", "e", "f", "y", "s", "h", "x", "u", "U", "c", "?"])
+    # TODO: Replay get_command(..) in favor of prompt(..).
+    key = get_command(["l", "L", "e", "f", "y", "s", "h", "x", "u", "U", "c", "?"])
 
     # Process the user's command.
-    if key == "l":
+    if key == "l" or key == "L":
       # Run the LLM (if not already run).
       do_it = True
       if llm_finished():
-        print("LLM was already run and completed reported that the refactoring was complete. Run anyway? [y/N]")
-        print("> ", end="")
-        ch = getch()
-        print("")
+        ch = prompt("LLM was already run and reported that the refactoring was complete. Run anyway?", {"y", "n"}, "n")
         if ch != "y":
-          print("Choose a different command.")
+          print("Aborted. Choose a different command.")
           do_it = False
       if do_it:
         with open("messages.json") as message_file:
           with open(working_verilog_file_name) as verilog_file:
-            run_llm(json.loads(message_file.read()), verilog_file.read())
+            verilog = verilog_file.read()
+            # Strip leading and trailing whitespace, then add trailing newline.
+            verilog = verilog.strip() + "\n"
+            run_llm(json.loads(message_file.read()), verilog, "gpt-3.5-turbo" if key == "l" else "gpt-4-turbo")
     elif key == "e":
       run_fev(True)
     elif key == "f":
@@ -1012,11 +1072,7 @@ while True:
         confirm = False
       
       if do_it and confirm:
-        # Are you sure?
-        print("Are you sure you want to accept this refactoring step as complete [y/N]?")
-        print("> ", end="")
-        ch = getch()
-        print("")
+        ch = prompt("Are you sure you want to accept this refactoring step as complete?", {"y", "n"}, "n")
         do_it = ch == "y"
         if do_it:
           print("Accepting the refactoring step as complete.")
@@ -1124,14 +1180,51 @@ while True:
       mod = actual_mod()
       prev_mod = None if mod <= 0 else actual_mod(mod - 1)
       if prev_mod is None:
-        print("There is no previous modification.")
+        # Prompt user.
+        resp = None
+        if refactoring_step <= 1:
+          resp = prompt("There is no previous modification. Would you like to [r]eset this refactoring step?", ["r", "n"], "n")
+        else:
+          print("There is no previous modification in the current refactoring step.")
+          print("What would you like to do:")
+          print("    [u]naccept (irreversibly) the last refactoring step")
+          print("    [r]eset this refactoring step")
+          resp = prompt("    [N]othing", ["u", "r", "n"], "n")
+        # Handle the user's response.
+        if (resp == "u" and refactoring_step > 1) or (resp == "r"):
+          # Delete this history directory, decrement the refactoring step number, restore its prompt ID (or 0).
+          # Then, update status to unaccepted ("u") or reinitialize the refactoring step ("r").
+
+          # Delete the history directory.
+          shutil.rmtree("history/" + str(refactoring_step))
+          # Decrement the refactoring step number.
+          refactoring_step -= 1
+          set_mod_num()
+          # Restore the prompt ID.
+          if refactoring_step > 0:
+            with open("history/" + str(refactoring_step) + "/prompt_id.txt") as f:
+              prompt_id = int(f.read())
+          else:
+            prompt_id = 0
+          # Update status to unaccepted ("u") or reinitialize the refactoring step ("r").
+          if resp == "r":
+            init_refactoring_step()
+            print("\nRefactoring step reset.")
+          else:
+            # Unaccept.
+            status = readStatus()
+            status["accepted"] = False
+            writeStatus(status)
+            break
+
       else:
         # Revert to a previous version of the code.
         print("Reverting to the previous version of the code.")
         show_diff(mod, prev_mod)
-        # Copy the checkpointed verilog and messages.json.
+        # Copy the checkpointed verilog and messages.json (if it exists).
         os.system("cp " + mod_path(prev_mod) + "/" + working_verilog_file_name + " " + working_verilog_file_name)
-        os.system("cp " + mod_path(prev_mod) + "/messages.json messages.json")
+        if os.path.exists(mod_path(prev_mod) + "/messages.json"):
+          os.system("cp " + mod_path(prev_mod) + "/messages.json messages.json")
 
         # Create a reversion checkpoint as a symlink, either as a new checkpoint or by updating the existing symlink.
         checkpoint_reversion(prev_mod)
@@ -1163,10 +1256,7 @@ while True:
         print("  [" + str(i) + "] mod_" + str(candidates[i]) + ": " + json.dumps(readStatus(m)))
       
       # Prompt the user to choose a candidate.
-      print("Enter the [#] number of the reversion to redo:")
-      print("> ", end="")
-      ch = getch()
-      print("")
+      ch = prompt("Enter the [#] number of the reversion to redo:")
       if not ch.isdigit() or int(ch) < 0 or int(ch) >= len(candidates):
         print("Error: Invalid selection. Try again.")
         continue

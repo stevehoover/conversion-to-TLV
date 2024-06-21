@@ -20,7 +20,7 @@
 +
 +Analyze the explicit use of clocks in the code. Clock signals can be identified based on their names ('clock', 'clk', etc.), their generation, and/or their usage. A clock signal will be used in a `posedge` or `negedge` condition of an `always @` or `always_ff`. Internal clocks may be generated from input clocks, possibly using externally-defined modules or macros.
 +
-+In a special \"notes\" field of your response, report on the global clock signal, either which signal it is, that there isn't one, or that it is not clear which signal is the global clock. Additionally, add a special field to the response called \"clock\", with a value of the name of the clock input signal. If there is no input clock signal, or if it is not clear which is the input clock signal, the value should be an empty string.
++In the \"notes\" field of your response, report on the global clock signal, either which signal it is, that there isn't one, or that it is not clear which signal is the global clock. Include an additional field in your response called \"clock\", with a value of the name of the clock input signal. If there is no input clock signal, or if it is not clear which is the input clock signal, the value should be an empty string.
 +
 +In the \"issues\" field of the response, list all other potential explicit input and internal clock signals (if any) with a brief description for each of what type of clock it is (or might be) and how it is used. Also, updated the code with \"TODO: LLM: ...\" comments to identify these issues in the code.
 +
@@ -28,47 +28,80 @@
 }, {
 "desc": "Reset issues",
 "background":
-"Reset methodology varies across designs. Most designs will use an external global (\"cold\") reset signal to initialize machine state to known reset values. This reset will be propagated throughout the design, beginning as an asynchronous condition, and possibly being synchronized with the clock at some point in its distribution. Synchronous reset signals may be delayed through flip-flops before reaching the states they control.
+"Reset methodology varies across designs. Most designs will use an external global (\"cold\") reset signal to initialize machine state to known reset values. This reset will be propagated throughout the design, beginning as an asynchronous condition, and possibly being synchronized with the clock at some point in its distribution. Synchronous reset signals may be delayed through D-flip-flops before reaching the states they control.
 +
 +TL-Verilog constructs are for synchronous logic only. Designers often like to drive asynchronous reset signals directly into flip-flops, which would not be possible in TL-Verilog. Use of asynchronous resets can be recognized as a reset signal used as a `posedge`/`negedge` condition in an `always @` or `always_ff` block. It may also be used in an `if` condition of a non-blocking assignment.
 +
 +Often Verilog developers prefer to use inverted (aka negatively-asserted) reset signals (that are low (zero) during reset, and high (one) during normal operation), and this is fine, though FEV needs to be aware of the assertion level. Negatively-asserted reset signals might have names like `nrst`, `reset_n`, `resetb`, etc. (where 'n' stands for \"not\" and 'b' stands for \"bar\").
 +
-+Some circuits may have lesser reset signals that might reset a subset of the states in the overall circuit. These might be termed \"soft reset\", \"logic reset\", \"local reset\", etc.",
++Some circuits may have lesser reset signals that might reset a subset of the states in the overall circuit. These might be termed \"soft reset\", \"logic reset\", \"local reset\", etc. These should be synchronous",
 "prompt":
 "Unless it is purely combinational, our current module should have a primary reset input signal and may have other reset signals. All non-clock inputs should be synchronous. This may not be obvious from the interface definition. A name like `arst` might indicate an asynchronous reset, or code comments might indicate intent. The use of the signal as edge-triggering may also indicate an asynchronous nature. Flip-flop module names might also suggest the use of an asynchronous reset. If it appears an asynchronous input is used, report an \"issue\", and add a \"TODO: LLM: ...\" comment.
 +
-+If it is clear which is the reset signal, add two special fields to the response. The first will be called \"reset\" and its value will be the name of the reset signal. The second special field will be called \"reset_assertion\". This field indicates the assertion level of the reset signal, and it must have a value of \"high\" or \"low\".
++If it is clear which is the module's primary reset signal, include two additional fields in the response. The first will be called \"reset\" and its value will be the name of the reset signal. The second will be called \"reset_assertion\". This field indicates the assertion level of the reset signal, and it must have a value of \"high\" or \"low\". If the circuit is purely combinational and contains no reset input signals, return a \"reset\" field value of \"NONE\" and no \"reset_assertion\" field. If it is not clear which is the primary reset signal, return a \"reset\" field value of \"UNKNOWN\" and no \"reset_assertion\" field.
 +
-+If the circuit is purely combinational and contains no reset input signals, add a special field to the response called \"combinational\" with a value of \"true\".
-+
-+Identify the global (cold) reset signal using the \"reset\" and \"reset_assertion\" fields. Reset signals can be identified by their names (e.g. reset, rst, reset_n, resetb, nrst, etc.) and by their usage. Aside from possible comment additions/changes, there is no need to modify the Verilog code. Use \"issues\" to comment briefly on additional reset signals, describing in at most one sentence how broadly they are used in the module."
++Reset signals can be identified by their names (e.g. reset, rst, reset_n, resetb, nrst, etc.) and by their usage. Aside from possible comment additions/changes, there is no need to modify the Verilog code. Use \"issues\" to comment briefly on additional reset signals, describing in at most one sentence how broadly they are used in the module. Also comment and report issues for any asynchronous use of lesser reset signals.",
+"must_produce": ["reset"],
+"may_produce": ["reset_assertion"]
 },{
-"desc": "Non-synthesizable, analog, and tristate code",
+"desc": "Non-synthesizable, analog, and tri-state code",
+"background":
+"Our convesion process does convert non-synthesizable logic, analog modeling, and multi-driven buses (that use tri-state logic).
++
++Starting with non-synthesizable logic, in SystemVerilog, certain constructs are intended primarily for simulation purposes and are not synthesizable, meaning they can't be directly translated into hardware components during the synthesis process. Here's a summary of some common non-synthesizable constructs in SystemVerilog:
++
++Initial Blocks: Used primarily in testbenches, initial blocks execute only once at the beginning of simulation. These are used for setting up simulation parameters or initializing variables and are not suitable for hardware synthesis which requires continuously operating circuits.
++
++Always Blocks with Delay: Constructs like always #10 ... use simulation delays (#) to control timing, which can't be directly implemented in hardware. Delays are purely for simulation to mimic real-time behavior and are ignored in synthesis.
++
++Procedural Timing Controls: Timing control statements such as #, wait, and @ (event control) are used to manage simulation time and event ordering. These constructs do not have a direct hardware counterpart as hardware operation is continuous and not event-based.
++
++Simulation-Specific System Tasks and Functions: Functions like $display, $stop, and $monitor are used for debugging and monitoring during simulation. These constructs provide output to the console or control simulation flow but do not translate to any hardware logic.
++
++Fork-Join Constructs: The fork ... join construct allows multiple procedural blocks to execute concurrently in simulation, which is useful for describing parallel operations in test environments. However, the actual implementation of parallelism in hardware needs to be explicitly defined using synthesizable constructs.
++
++Non-Synthesizable Data Types: Certain data types, like real and string, are used for modeling and simulation purposes only. For instance, floating-point types (real, realtime) are typically used in algorithmic modeling but require explicit hardware implementation through fixed-point arithmetic or dedicated floating-point units for synthesis.
++
++Certain Conditional Statements: Constructs like assert and assume are used in formal verification to check properties and assumptions within the design during simulation. These are not synthesized into hardware but are crucial for ensuring design correctness in pre-synthesis simulation.
++
++Dynamic Memory Allocation: Dynamic constructs such as dynamic arrays, queues, and associative arrays are primarily used in testbenches for flexible data storage. These are typically not synthesizable as hardware requires fixed memory allocation.
++
++
++Analog modeling is another area that is not supported by our conversion process. Analog modeling is used to describe continuous-time signals and behavior, which is fundamentally different from the discrete-time, digital logic that is synthesized into hardware. Analog constructs like continuous assignments, real numbers (`wreal`), and `analog` blocks are not supported by hardware synthesis tools and are not part of the digital logic design flow.
++
++
++Tri-state logic is a type of logic that allows a signal to assume one of three states: logic 0, logic 1, or high impedance (Z-state). Tri-state logic is commonly used in bus systems to allow multiple devices to share a common bus. However, tri-state logic is not directly synthesizable into hardware and can lead to issues like bus contention and undefined logic levels. Synthesizable hardware designs typically use multiplexers or other techniques to avoid tri-state logic.",
 "prompt":
-"TL-Verilog and FEV are tools for working with digital, sequential logic. They are not intended for working with verification test bench modeling, and they are not meant for analog logic. Also, the use of tristate (Z-state) is problematic. Identify any non-synthesizable, analog, and tri-state code. Add \"TODO: LLM: ...\" comments to the code to identify these issues, and report them in the \"issues\" field of the response."
+"TL-Verilog and FEV are tools for working with digital, sequential logic. They are not intended for working with non-synthesizable verification (test bench) modeling. They are also not meant for analog logic and tri-state (Z-state) buses. Analyze the Verilog code for any use of non-synthesizable, analog, and/or tri-state logic. If any of these are found, add \"TODO: LLM: ...\" comments to the code to identify these issues, and report them in the \"issues\" field of the response. There is no need to make any code changes other than comments. If no non-synthesizable, analog, or tri-state code is found, do not make code/comment changes, and do not report issues."
 },{
-"desc": "Synchronous reset",
-"unless": {"reset": "reset", "assertion": "high"},
+"desc": "Proper reset signal",
+"if": {"reset_assertion": "low"},
 "needs": ["reset", "reset_assertion"],
 "prompt":
-"Create a positively-asserted, synchronous reset signal called 'reset'."
-},{
-"desc": "Synchronous reset",
-"unless": {"reset": "reset", "assertion": "high"},
-"needs": ["reset", "reset_assertion"],
-"prompt":
-"Everywhere flip-flops are reset, the `reset` signal should be used synchronously. Make any asynchronous resets synchronous; if other reset signals are used, correct them to use `reset`; and be sure to use the correct assertion level."
+"The primary reset input signal (identified in the \"reset\" field listed below) is negatively-asserted (as determined earlier and reported in the \"reset_assertion\" field, also listed below). Create a signal called `reset`, generated by inverting the primary reset input signal.
++
++This new signal should be used in the module in place of the primary reset input signal. Update the code to use this new `reset` signal, inverting the polarity of its use, in all cases, to preserve the original behavior."
 },{
 "desc": "Separate declarations",
 "prompt":
-"In SystemVerilog, 'logic' and 'wire' signal declarations may be followed by an '=' and an assignment. For any statements that combine the declaration and assignment, separate these into two statements with the declaration on its own line."
+"In SystemVerilog, 'logic' and 'wire' signal declarations may be followed by an '=' and an assignment. For any statements that combine the declaration and assignment, separate these into two statements with the declaration on its own line. For example:
++
++```verilog
++logic y = a & b;
++```
++
++should be transformed to:
++
++```verilog
++logic y;
++y = a & b;
++```
++
++Since the module interface declares output signals, no changes are required for module output assignments."
 },{
 "desc": "Identify non-deterministic behavior",
-"prompt":
-"Some constructs in Verilog can lead to non-deterministic behavior or inconsistent behavior on different simulation tools. Identify all such constructs in the code and summarize them in the \"issues\" field of the response. Add \"TODO: LLM: ...\" comments to the code to identify these issues and to provide suggested corrections where possible.
-+
-+Some examples of non-deterministic behavior include the following:
+"background":
+"Some constructs in Verilog can lead to non-deterministic behavior or inconsistent behavior on different simulation tools. The following are some examples of non-deterministic code:
 +
 +- Inconsistent use of blocking and non-blocking assignments. Blocking assignments should be used for combinational logic, and non-blocking assignments should be used for sequential logic triggered by a clock. If blocking and non-blocking assignments are not used properly, race conditions can occur.
 +- Use of `initial` blocks to initialize signals. This can lead to non-deterministic behavior because the order of execution of `initial` blocks is not guaranteed.
@@ -81,7 +114,9 @@
 +- Incomplete sensitivity lists in `always` blocks.
 +- Implicit nets (in other words, signals that aren't declared).
 +- Indeterminate loop bounds (those that cannot be statically determined).
-+- Case statements without a `default` case. This can lead to non-deterministic behavior if the case statement is not fully enumerated."
++- Case statements without a `default` case. This can lead to non-deterministic behavior if the case statement is not fully enumerated.",
+"prompt":
+"Identify non-deterministic code and summarize issues in the \"issues\" field of the response. Add \"TODO: LLM: ...\" comments to non-deterministic code to identify these issues and to provide suggested corrections where possible. Do not make any changes to the code at this time other than adding comments."
 },{
 "desc": "No implied latches",
 "background":
@@ -95,7 +130,7 @@
 +
 +Example of Implied Latches:
 +
-+```
++```verilog
 +always @(a or b)
 +begin
 +    if (a == 1'b1)
@@ -125,15 +160,23 @@
 +
 +If there are latches in the design, identify them in the \"issues\" field of the response and add \"TODO: LLM: ...\" comments to capture these issues in the code."
 },{
-"desc": "Rising edge clocking",
+"desc": "Rising edge D-type flip-flops only",
+"background":
+"It is most typical for flip-flop-based sequential logic to consistently use flip-flops that are triggered on the rising edge of the clock.
++
++In sequential logic design, D flip-flops are the most common type of flip-flop used. They are edge-triggered, meaning that the output of the flip-flop changes only on the rising or falling edge of the clock signal. (In our case, they should be triggered by the rising edge.) For D-type flip-flops, this clock edge results in the input value being driven at the output. Other types of flip-flops, such as T flip-flops and JK flip-flops, are less common in modern designs. They incorporate a logic function in addition to their sequential behavior.",
 "prompt":
-"It is most typical for flip-flop-based logic to consistently use flip-flops that are triggered on the rising edge of the clock. If the code contains any sequentials other than rising-edge-triggered flip-flops, report issues in the \"issues\" field of the response and add \"TODO: LLM: ...\" comments to capture these issues in the code."
+"If the code contains any sequentials other than rising-edge-triggered D-flip-flops, report issues in the \"issues\" field of the response and add \"TODO: LLM: ...\" comments to capture these issues in the code. Do not make any changes to the code other than adding these comments (if needed)."
 },{
 "desc": "No incomplete conditionals",
 "background":
-"Signals should be assigned by one and only one statement or block. In an combinational statement or block, each signal should be assigned for all possible inputs to avoid implied latches. At this point, our Verilog code should be free of implied latches. In `always` blocks that are triggered by a clock, such as `always_ff` and `always @(posedge clk)`, input combinations that result in no assignment, imply that the value must be held. A logic synthesis tool could implement this is various ways. It might imply a latch. It might recirculate the value through its producing flip-flop (through a multiplexer selected by the condition for non-assignment). Or it might infer clock gating to retain the value.",
+"Signals should be assigned by one and only one statement or block.
++
++In a combinational statement or block (sensitive to logic signals, not to a clock edge), each signal should be assigned for all possible inputs to avoid implied latches. At this point, our Verilog code should be free of implied latches.
++
++In `always` blocks that are triggered by a clock, such as `always @(posedge clk)` and `always_ff @(posedge clk)`, input combinations that result in no assignment, imply that the value must be held. A logic synthesis tool could implement this is various ways. The most direct interpretation might imply a latch after the logic expression that prevents the result of the expression from propagating through the latch in cases where no assignment would be made. Thus the enable input for the latch would be this no-assignment condition. This would be an awkward use of a latch in the context of otherwise flip-flop-based logic. Logic synthesis might instead derive a circuit with an explicit recirculation path to preserve the unchanged value. In this case, the edge-triggered always block results in a D-flip-flop that is driven by the logic within the always block. The implied recirculation path would feed the flop output through a multiplexer back into the flop. The multiplexer would select this recirculation path in cases where no assignment is made. Alternatively, logic synthesis might infer clock gating to retain the value by gating off the clock pulse when no update is to be made to the always block's output value.",
 "prompt":
-"Update the Verilog code to avoid incomplete assignments. In any scenarios where values are to be held, provide explicit recirculation of the value through a multiplexer and flip-flop. For example:
+"For signals assigned by a clock-edge-triggered always block whose assignment is incomplete (in other words, the signal is not assigned under all possible input conditions), update the Verilog code to provide explicit recirculation of the value through a multiplexer and D-flip-flop. For example:
 +
 +```verilog
 +always_ff @(posedge clk)
@@ -155,17 +198,46 @@
 +    else if (a)
 +        y <= b;
 +    else
-+        y <= y; // Recirculate the value
++        y <= y; // Recirculate the value explicitly
 +end
-+```"
++```
++
++Similary, for a `case` statement:
++
++```verilog
++always_ff @(posedge clk)
++begin
++    case (sel)
++        2'b00: y <= a;
++        2'b01: y <= b;
++    endcase
++end
++```
++
++should be updated to:
++
++```verilog
++always_ff @(posedge clk)
++begin
++    case (sel)
++        2'b00: y <= a;
++        2'b01: y <= b;
++        default: y <= y; // Recirculate the value explicitly
++    endcase
++end
++```
++
++If there are no incomplete assignments, do not make any changes to the code. And remember, even though block quotes are provided here to delimit Verilog code snippets, the \"verilog\" field of your response should provide the literal Verilog code without block quotes."
 },{
 "desc": "Use SystemVerilog always blocks",
 "prompt":
-"Get rid of Verilog `always` blocks and replace them with SystemVerilog `always_ff` and `always_comb` blocks. For example, `always @(posedge clk)` should be replaced with `always_ff @(posedge clk)`. Such blocks should consistently use non-blocking (`=>`) assignments. `always @*` or `always` blocks with a sensitivity list should be replaced by `always_comb`. These should use blocking (`=`) assignments. Update the code to use these SystemVerilog always blocks."
+"Get rid of Verilog `always` blocks and replace them with SystemVerilog `always_ff` and `always_comb` blocks. For example, `always @(posedge clk)` should be replaced with `always_ff @(posedge clk)`. Such blocks should already use non-blocking (`=>`) assignments, not blocking ones, and no internal changes should be needed within the blocks. `always @*` or `always` blocks with non-edge-triggered sensitivity lists should be replaced by `always_comb`. These should already use blocking (`=`) assignments, not non-blocking ones, and no internal changes should be needed within the blocks. Update the code to use these SystemVerilog always blocks. Only modify pre-existing `always` blocks. In particular, do not modify `assign` statements."
 },{
 "desc": "Separate combinational and sequential logic blocks",
 "prompt":
-"Let's avoid having combinational logic in `always_ff` blocks. Separate combinational and sequential logic into separate always blocks. Combinational logic should be in `always_comb` blocks, and sequential logic should be in `always_ff` blocks. For example:
+"Let's avoid having combinational logic in `always_ff` blocks. Modify `always_ff` blocks as and if necessary to separate combinational and sequential logic (D flip-flops) into separate always blocks. Combinational logic should be in `always_comb` blocks, and flip-flops should be in `always_ff` blocks.
++
++For example:
 +
 +```verilog
 +always_ff @(posedge clk)
@@ -345,7 +417,7 @@
 +
 +It is also common to use `i` or `o` to indicate input and output signals.
 +
-+Report on the signal naming conventions in a special \"naming\" single-line string field in your response."
++Add a \"naming\" string field in your response that describes the signal naming convention."
 },{
 "desc": "Data flow",
 "comment": "This would work better as a code analysis step that analyzes the entire codebase.",
@@ -358,7 +430,7 @@
 "prompt":
 "Analyze the code to determine where the design uses pipelines. In this context a pipeline involves computations or processing that is stretched out over multiple clock cycles. It could even simply be the staging of data. This processing must flow freely without any form of backpressure or stalling to be considered part of the same pipeline. Determine meaningful names for the identified pipelines. Choose a pipeline stage numbering for each such pipeline (or if one has already been determined, keep it). The first pipeline stage with any appreciable logic can be identified as stage 1. Add \"LLM: ...\" comments to the code to annotate the code with these pipeline stages.
 +
-+If no pipelines are identified, add a special field to the response called \"pipelines\" with a value of \"none\".
++If no pipelines are identified, add a field to the response called \"pipelines\" with a value of \"none\".
 +
 +Pay attention to signal naming conventions that might indicate pipeline stages. These conventions have been analyzed and are described below."
 },{

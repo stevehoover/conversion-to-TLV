@@ -1,9 +1,9 @@
 [gold]
-read_verilog -DGOLD <ORIGINAL_FILE>
+read_verilog -sv -DGOLD <ORIGINAL_FILE>
 prep -top <MODULE_NAME>
 
 [gate]
-read_verilog -DGATE <MODIFIED_FILE>
+read_verilog -sv -DGATE <MODIFIED_FILE>
 prep -top <MODULE_NAME>
 
 [collect *]
