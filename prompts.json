@@ -1,30 +1,86 @@
 [{
 "desc": "Initial code"
 }, {
+"desc": "Module declaration",
+"prompt": "The Verilog file should declare a single module. If the file contains multiple modules or no module, report an issue using the \"issue\" field of the response."
+}, {
 "desc": "Code sections",
-"prompt": "If the body of the module is longer than about 50 lines, partition the module into sections of related logic that are 30-50 lines long. Do this by adding comment lines of the format \"// Section: <section_name>\" to mark sections. The section name should be a short, descriptive name of the section. An pre-existing section boundaries can be retained."
+"prompt": "Partition the code into three sections: \"Begin File\", \"Begin Body\", and \"End Body\". Each section will be identified by a header comment line including its name, as \"// LLM: Section: <name>\" (with no preceding whitespace). The first section of the file will be named \"Begin File\", so add a first line to the file: \"// LLM: Section: Begin File\". The second section of the file will be called \"Begin Body\". It will begin immediately following the \";\" ending the module interface declaration. The final (third) section will be called \"End Body\". It will begin immediately preceding the \"endmodule\" line. Add the appropriate header comment lines to identify these sections. For example, your response might look like this:
++
++```verilog
++// LLM: Section: Begin File
++module my_module (
++    input logic a,
++    output logic b
++);
++// LLM: Section: Begin Body
++    assign a = b;
++// LLM: Section: End Body
++endmodule
++```
++
++Note, the \"Begin File\" and \"End Body\" sections might include other things like \"`define\" statements, etc."
+}, {
+"desc": "Analyze tabs",
+"must_produce": ["tab_width"],
+"prompt": "Try to determine the assumed width of tabs in the given Verilog code. Make no changes to the Verilog, but report the determined tab width in a field called \"tab_width\" in the response. If the width is not clear, provide a \"tab_width\" value of \"unknown\". If there are no tabs in the code, provide a \"tab_width\" value of \"none\"."
+}, {
+"desc": "Fix tabs",
+"unless": {"tab_width": "none"},
+"needs": ["tab_width"],
+"prompt": "Tab characters do not have a standardized width. The developer's assumption for the tab width has been determined and is listed below in the field \"tab_width\". Replace tabs with the appropriate number of spaces."
 }, {
 "desc": "Three-space indentation",
-"prompt": "Use three spaces as the standard unit of indentation. The module declaration as well as the \"endmodule\" should have no indentation, while the body of the module should have one level (three spaces) of indentation."
+"needs": ["tab_width"],
+"prompt": "Each level of code scope in TL-Verilog is indented exactly three spaces. Update the Verilog codes's line indentation to conform to this standard of three spaces of indentation for its Verilog scopes, such as within `begin`/`end`.
++
++Here is some additional guidance. The module declaration as well as the \"endmodule\" should have no indentation. Any indentation of module parameter in the module definition may be left unchanged. The body of the module should have one level (three spaces) of indentation. For multiline statements, lines after the first line of each statement must be indented, but this indentation may be preserved (if > 0). This indentation does not have to be three spaces.
++
++Note that if the Verilog code originally used tabs, the indentation has already been updated to use spaces in the original code for this refactoring step, and this indentation likely matches the assumed tab width reported below in the field \"tab_width\". If the original code was consistent with its scope indentation, your updates will consistently update from this indentation to the new three-space indentation convention. If the original code was not consistent with its indentation, you will make it consistently three spaces."
 }, {
 "desc": "Clocking",
-"prompt": "In this refactoring step, you will examine the use of clocks in the module and make changes as necessary to conform to the clocking requirements of TL-Verilog. You must first ensure that the use of clocks conforms to the assumptions of TL-Verilog logic, so let's first discuss TL-Verilog's clocking assumptions, then discuss some of the use of clocks you might encounter in Verilog code, then discuss how to address various scenarios.
+"must_produce": ["clock"],
+"prompt":
+"The FEV flow we are using in the refactoring process requires a single free-running input clock (or no clock). We cannot currently automate the conversion of a module with other clock inputs. Further, internally generated clocks can be problematic for conversion to TL-Verilog.
 +
-+TL-Verilog language extensions are used to express digital, sequential logic. While the broader codebase we are transforming may involve different clock domains with clocks that run at different frequencies and may transmit signals across clock domains, TL-Verilog is used only within a clock domain. We do not aim to convert the clock network that would provide the clock for different clock domains nor the clock domain crossing logic that would reliably transmit data across clock domains. The provided Verilog logic is expected to be clocked by a single free-running, global clock input signal (or to be purely combinational with no clock). The FEV flow also requires a single free-running input clock (or no clock).
++In this refactoring step, you will scan through the Verilog code to understand and report on its use of clocks in the module. Most modules take a global clock as input and use it for all sequential elements (which primarily tend to be D-type flip-flops). If this is the case for this module, you will make no code changes and simply provide a \"clock\" field in your response whose value is the name of the global clock input signal.
 +
-+TL-Verilog logic can generate \"non-functional gated-clocks\". Gated clocks are produced from the main (free-running, global) clock, using a condition signal to determine each cycle whether or not there should be a pulse on the gated clock corresponding to the pulse on the main clock. For a non-functional gated clock the absence of clock pulses does not affect the behavior of the circuit. It is used only to save power. \"Functional clock gating\", on the other hand, is used to affect the circuit's behavior as well as to save power. (It may be difficult to distinguish this by analyzing the code.) TL-Verilog uses fine-grained conditions to generate fine-grained gated clocks. These conditions reflect the validity of the data in the flip-flops that are controlled by the gated clocks. Though it should be possible to preserve the gating once converted to TL-Verilog, this gating may limit the ability to optimize the expression of the logic using TL-Verilog. FEV should work fine with internally-generated gated clocks (functional or non-functional).
++It is also possible that the module is purely combinational and has no input clock signal(s). In this case, provide a \"clock\" field value of \"NONE\".
 +
-+Verilog logic can infer clock gating. For example, a `reg` signal that is conditionally assigned under an `if` statement could be implemented using a gated clock, gated by the `if` condition. (It's up to logic synthesis tools whether to employ a clock gating in this case.) This sort of clock gating is perfectly fine and will be addressed later. You can ignore such possible clock gating for now.
++In other cases, you may encounter more sophisticated clocking that could be problematic. Specifically, any use of a clock other than a global input clock could be problematic. You will report on these issues so the user can address them. In no circumstance will you make changes to the Verilog logic for this refactoring step. You may, however, add or modify code comments to capture your findings for the benefit of those who will work with the translated code. Let's discuss various scenarios you might encounter, how to recognize them, and how to best deal with them.
 +
-+You may also encounter divided clocks. Divided clocks are generated from the main clock to have a period that is a multiple of the main clock's period. These would be problematic.
++Any code that generates a clock internally should be identified and reported as an issue. \"TODO: LLM: ...\" comments should be inserted to identify such code. This could include code that generates a clock for simulation using (non-synthesizable) delay statements, e.g. `@5 clk = ! clk`. It could also include code that generates an internal clock based on an input clock. This would include gated clocks and divided clocks, discussed next.
 +
-+Analyze the explicit use of clocks in the code. Clock signals can be identified based on their names ('clock', 'clk', etc.), their generation, and/or their usage. A clock signal will be used in a `posedge` or `negedge` condition of an `always @` or `always_ff`. Internal clocks may be generated from input clocks, possibly using externally-defined modules or macros.
++Gated clocks might be generated in various ways. Verilog logic can infer clock gating implicitly. In this case, the gated clock is not explicitly declared as a signal. This is actually a case you don't need to worry about, but let me explain it so you know not to report on it. As an example, consider the following code:
 +
-+In the \"notes\" field of your response, report on the global clock signal, either which signal it is, that there isn't one, or that it is not clear which signal is the global clock. Include an additional field in your response called \"clock\", with a value of the name of the clock input signal. If there is no input clock signal, or if it is not clear which is the input clock signal, the value should be an empty string.
++```verilog
++always_ff @(posedge clk) if (valid) y <= x;
++```
 +
-+In the \"issues\" field of the response, list all other potential explicit input and internal clock signals (if any) with a brief description for each of what type of clock it is (or might be) and how it is used. Also, updated the code with \"TODO: LLM: ...\" comments to identify these issues in the code.
++Logic synthesis could produce from this a gated clock that pulses only when the `valid` signal is asserted. This gated clock would clock the flip-flop that updates `y`. Again, this implicit clock gating will be addressed later, so you can ignore such implicit clock gating for now.
 +
-+TL-Verilog has a requirement that the at-most-one clock signal be named `clk`. Our code conversion flow currently only supports flip-flops that are triggered on the positive edge of the clock. If the input clock (assuming there is one) has a name other than `clk`, create a `clk` signal at the beginning of the module. For example, if the input clock name is 'input_clk', add the line `logic clk = input_clock;` at the beginning of the module body and replace `input_clock` (in this example) with `clk` throughout the code. There may also be a clock inversion in the logic or consistent use of a clocks negative edge. This would need to be addressed such that flip-flops are always triggered on the positive edge of `clk`."
++Explicit clock gating, on the other hand, should be identified and reported as an issue. A clock gating module or macro might be used to generate the gated clock signal. Or the gating logic itself might be explicit. Such logic might use a clock enable signal that would be ANDed with the global clock signal. Report any such code in the \"issues\" response field, and add \"TODO: LLM: ...\" comments to identify such code.
++
++Divided clocks are also problematic. They can be generated from a global clock by counting clock pulses. They might be implemented as a special case of clock gating by enabling a pulse once every n cycles. This would produce a divided clock with an imbalanced duty cycle, where, for example, the high duration of the clock pulse is the same as the high duration of the global clock, but the low duration is extended. Alternatively, a half-frequency clock with a balanced duty cycle might be generated by toggling a signal on every rising edge of the global clock. Divided clocks might also be generated through the use of module or macro instantiation.
++
++Clock signals can also be identified based on their names ('clock', 'clk', etc.), and by code comments. Any input signals beyond the global clock input that also appear to be clock signals should be reported.
++
++Clock signals can also be identified based on their usage. A clock signal will be used in a `posedge` or `negedge` condition of an `always @` or `always_ff`. Any edge-triggered use of a signal other than the global clock can be reported, however, it is sufficient to report the generation of or the input of such a clock. If the generation or input of the clock is reported, it is not necessary to report each use.
++
++You might find the use of multiple independent clocks that do not share a common global clock. Each clock might be an independent input to the module or might be generated by a phase-locked loop (PLL)--the circuit typically used to generate clocks. Generally, though different clocks would be in separate clock domains and different modules. You might see a module that is specifically providing clock crossing logic that has multiple clocks. Such modules are not good candidates for conversion to TL-Verilog.
++
++In the \"notes\" field of your response, report on the global clock signal, either which signal it is, that there isn't one, or that it is not clear which signal is the global clock. Again, include an additional field in your response called \"clock\" whose value is the name of the clock input signal. If there is no input clock signal, provide a value \"NONE\" for \"clock\".
++
++In the \"issues\" field of the response, list all other potential explicit input and internal clock signals (if any) with a brief description for each of what type of clock it is (or might be) and how it is used. Also, updated the code with \"TODO: LLM: ...\" comments to identify these issues in the code."
+}, {
+"desc": "Clock signal",
+"unless": {"clock": ["NONE", "clk"]},
+"needs": ["clock"],
+"background":
+"TL-Verilog has a requirement that, if there is a clock signal, it is named `clk`.",
+"prompt":
+"The global clock signal name is reported below in the field \"clock\". Create a `clk` signal at the beginning of the module. For example, if the input clock name is 'input_clk', add the line `logic clk = input_clock;` at the beginning of the module body and replace `input_clock` (in this example) with `clk` throughout the code.",
+"TODO": "Add some automation to detect code that uses `negedge` and not `posedge` and invert the clock in this case."
 }, {
 "desc": "Reset issues",
 "background":
@@ -118,6 +174,117 @@
 "prompt":
 "Identify non-deterministic code and summarize issues in the \"issues\" field of the response. Add \"TODO: LLM: ...\" comments to non-deterministic code to identify these issues and to provide suggested corrections where possible. Do not make any changes to the code at this time other than adding comments."
 },{
+"desc": "Replace if/else with ternary expressions",
+"prompt":
+"For signals assigned in all cases of an inner-most `if`/`else` statement or chain. Transform the signal's assignments into a ternary expression. For example, transform:
++
++```verilog
++if (cond)
++    y = b;
++else
++    y = c;
++```
++
++into:
++
++```verilog
++// LLM: Temporary: Transformed from if/else chain.
++y = cond ? b : c;
++```
++
++Let's look at a more interesting example.
++
++```verilog
++...
++    if (valid) begin
++        if (cond1)
++            y = b;
++        else if (cond2)
++            y = c;
++        else begin
++            y = d;
++            z = e;
++        end
++    else
++        y = f;
++    end
++...
++```
++
++might be transformed into:
++
++```verilog
++...
++    // LLM: Task: This \"if\" block needs further consideration.
++    if (valid) begin
++        // LLM: Temporary: Transformed from if/else chain.
++        y = cond1 ? b :
++            cond2 ? c :
++                    d;
++
++        if (!cond1 && !cond2)    // LLM: Temporary: Removed the original `if` and `if else` cases and updated the condition accordingly.
++            z = e;  // LLM: Temporary: Cannot be transformed because not all conditions result in an assignment.
++    else
++        y = f;
++    end
++...
++```
++
++Notice a few things in the above example:
++  - The \"z\" signal is not transformed because not all conditions result in an assignment. With the \"y\" signal removed, the `if`/`else` chain was simplified for the remaining \"z\" signal.
++  - Having reduced the inner expression for \"y\", the outer `if`/`else` can then be turned into an extension of the ternary expression for \"y\". This transformation is tagged as a subsequent task. rather than tackling too much at once.
++
++A subsequent transformation of the above example might result in this further-updated verilog:
++
++```verilog
++...
++    // LLM: Temporary: Extended with `valid` case from `if` condition.
++    y = valid ? cond1 ? b :
++                cond2 ? c :
++                        d :
++                f;
++
++    if (valid && !cond1 && !cond2)    // LLM: Temporary: Incorporated `valid` from `if` expression.
++        z = e;
++...
++```
++
++This might complete the refactoring step.
++
++As you go through the Verilog code, you may find that it already contains ternary expressions. Since these look like refactoring progress, but are not, mark them with comments like \"// LLM: Temporary: Nothing changed here.\" Otherwise you might mistakenly believe you have made forward progress when you have not. Since these will be removed from your response they will have no other impact and will cause no harm."
+},{
+"desc": "Merge conditional assignments using ternary expressions",
+"prompt":
+"Where a signal is assigned within an always block, then assigned conditionally (under an `if` or case statement), combine the conditional assignment with the unconditional assignment using a ternary expression. These assignments could be nested under an outer condition--that doesn't matter. The conditional assignment's condition becomes the condition of the added ternary expression added to the first assignment. If these are followed by another conditional assignment, this transformation can be applied again, adding a new first ternary expression, resulting in a new ternary chain. For example:
++
++```verilog
++always_comb begin
++    if (a)
++    begin
++        y = 1'b0;   // first assignment
++        if (b)
++            y = d;  // conditional assignment
++        if (c)
++            y = e;  // another conditional assignment
++    end
++end
++```
++
++can be transformed to:
++
++```verilog
++always_comb begin
++    if (a)
++    begin
++        y = c ? e :    // another conditional assignment
++            b ? d :    // conditional assignment
++                1'b0;  // first assignment
++    end
++end
++```
++
++As always, don't tackle too much at once. Do at least one transformation if there is one to be done, but don't feel compelled to do more than a few. If any assignments remain to be combined, respond with an \"incomplete\" value of \"true\"."
+},{
 "desc": "No implied latches",
 "background":
 "In digital design using Verilog, an \"implied latch\" refers to a storage element that is created due to incomplete specification of conditions in combinational logic coding. This happens when the Verilog code does not explicitly define the output for all input conditions, often within an `always` block.
@@ -139,11 +306,17 @@
 +end
 +```
 +
-+In this example, when `a` is not 1, the value of `y` is not defined, which leads to the creation of an implied latch. To maintain its last state, hardware for a latch will be synthesized.",
-"prompt":
-"Make sure there are no implied latches in the design. Ensure that all conditionals are fully specified, including `else` parts in `if` statements or a `default` case in `case` statements.
++In this example, when `a` is not 1, the value of `y` is not defined, which leads to the creation of an implied latch. To maintain its last state, hardware for a latch will be synthesized.
 +
-+Identify any issues in the \"issues\" field of the response and add \"TODO: LLM: ...\" comments to capture these issues in the code."
++It is important to understand that this implied-latch case only relates to combinational always blocks, such as `always_comb` blocks and `always` blocks that are not edge-sensitive. The term \"implied latch\" does not apply to similar scenarios for non-blocking assignments in edge-triggered blocks. Though latches could be implied by non-blocking assignments, they are not considered implied latches because their are other ways to treat these cases that do not involve latches.",
+"prompt":
+"Make sure there are no implied latches in the design. Verify that all signals that are assigned combinationally (by blocking `=` assignments) are fully specified. In other words, there must be no condition under which the signal is unassigned.
++
++This analysis can be non-trivial. Since semantics are sequential within an always block, the best strategy is to analyze the assignments of the signal sequentially. Once the signal is determined to be fully specified, subsequent assignments are immaterial. For `if` statements and nested `if` statements, if every `if` has a corresponding `else`, and each case assigns the signal in question, that signal is fully specified......
++
++Any issues will be addressed by the user, so make no changes to the code at this time other than adding comments.
++
++Identify any issues in the \"issues\" field of the response, and add \"TODO: LLM: ...\" comments to capture these issues in the code without making corrections."
 },{
 "desc": "Avoid latches",
 "prompt":
@@ -288,9 +461,76 @@
 "prompt":
 "Use a separate `always_ff` blocks for each flopped signal. Each blocks may be written on a single line without `begin`/`end`, such as: `always_ff @(posedge clk) y <= NEXT_y;`."
 },{
+"desc": "Short always blocks",
+"prompt":
+"TL-Verilog favors individual, independent assignment statements per signal over large, combinational `always_comb` blocks with sequential semantics. To work incrementally toward this, break up `always_comb` blocks into smaller blocks. Be careful not to separate portions of a block that assign the same signal.
++
++At this time, do not do any substantial code restructuring. Just make the easy changes.
++
++Be sure to preserve the comments from within the original block. Determine how these comments correspond to the code. Comments that associate with multiple of the new block can be moved outside of their `always_comb` block. Those that associate with the entirety of a new block can also be moved outside the new block. Other comments may associate with internal portions of a block and should remain internal to the new blocks."
+},{
 "desc": "Combinational logic block per signal",
 "prompt":
-"Use a separate `always_comb` block for each combinational signal (that is not assigned using an `assign`). This may result in some replication of logic, especially logic that determines cases that impact multiple signal assignments. In such cases, common logic can be pulled out into separate `always_comb` blocks or `assign` statements with additional signal declarations as needed."
+"For the first `always_comb` block in which multiple signals are assigned, break the block into multiple `always_comb` blocks, one per assigned signal. For example:
++
++```verilog
++always_comb
++begin
++    if (type == 2'b00)
++    begin
++        y = a;
++        z = b;
++    else
++    begin
++        y = c;
++        if (big)
++            z = d;
++        else
++            z = e;
++    end
++end
++```
++
++should be transformed to:
++
++```verilog
++always_comb
++begin
++    if (valid && type == 2'b00)
++    begin
++        y = a;
++    else
++    begin
++        y = c;
++    end
++end
++
++always_comb
++begin
++    if (valid && type == 2'b00)
++    begin
++        z = b;
++    else
++    begin
++        if (big)
++            z = d;
++        else
++            z = e;
++    end
++end
++```
++
++The recommended strategy for doing this is to identify the first signal to separate out. Walk through the code of the block and include those parts of the block that affect that particular signal to form its `always_comb` block. Then, repeat this process for the remaining signals.
++
++Handling comments appropriately can be tricky. Some comments might be relevant to multiple signals, and the code for these signals is getting separated. In some cases it might be best to move the comment outside the the `always_comb` blocks. The comment may need some rewording in its new context. Be sure not to lose any comments, their meaning, or their association. When uncertain, replicate the comments in each new block. Add \"TODO: LLM: ...\" comments to the code to identify any such commenting issues that would benefit from human review, and report them in \"issues\".
++
++If breaking up a particular `always_comb` block would be overly disruptive to the code structure, leave it as is and add a comment such as \"LLM: This block should be translated to TL-Verilog using a TL-Verilog `\\always_comb` block\". If you encounter a block that already has such a comment, be sure to process the next block.
++
++If there are other `always_comb` blocks that assign multiple signals that you have not processed, respond with an \"incomplete\" field of \"true\""
+},{
+"desc": "Remove unnecessary begin/end",
+"prompt":
+"Anywhere `begin`/`end` are used around a single statement, remove them."
 },{
 "desc": "Use ternary expressions instead of if/else",
 "prompt":
@@ -344,6 +584,25 @@
 +assign y = a & b;
 +```"
 },{
+"desc": "Common subexpressions",
+"prompt":
+"Scan the code for common subexpressions. Where doing so would simplify the code, extract such a subexpressions into a separate `assign` statements. For example:
++
++```verilog
++assign foo = (valid && type == 2'b00) ? a : c;
++assign bar = (valid && type == 2'b00) ? b : (big ? d : e);
++```
++
++could be transformed to:
++
++```verilog
++assign valid_type0 = valid && type == 2'b00;
++assign foo = valid_type0 ? a : c;
++assign bar = valid_type0 ? b : (big ? d : e);
++```
++
++As always, if the needed changes are significant, make a few changes, and leave the rest as is, indicating that changes are incomplete and outlining a plan for the remaining changes of this refactoring step."
+},{
 "desc": "Named block syntax",
 "background":
 "In Verilog, `generate` blocks can be named. For example:
@@ -365,7 +624,7 @@
 +end
 +```",
 "prompt":
-"For consistency, give every generate block short, appropriate name, and remove all uses of `generate`/`endgenerate`."
+"For consistency, give every generate block a short, appropriate name, and remove all uses of `generate`/`endgenerate`."
 },{
 "desc": "Localize declarations",
 "prompt":
