@@ -237,7 +237,8 @@ class OpenAI_API(LLM_API):
 
 # Response fields.
 response_fields = {"overview", "verilog", "notes", "issues", "modified", "incomplete", "plan"}    # ("incomplete" is sticky between LLM runs, so it has special treatment.)
-status_fields = {"by", "compile", "fev", "incomplete", "modified", "accepted"}
+status_fields = {"by", "compile", "fev", "incomplete", "modified", "accepted", "plan"}
+llm_status_fields = {"incomplete", "plan"}   # These are empty for a refactoring step and updated by LLM runs.
 class PseudoMarkdownMessageBundler(MessageBundler):
   # Convert the given object to a pseudo-Markdown format. Markdown syntax is familiar to the LLM, and fields can be
   # provided without any awkward escaping and other formatting, as described in default_system_message.txt.
@@ -268,7 +269,7 @@ class PseudoMarkdownMessageBundler(MessageBundler):
   # response: A boolean indicating whether the body is a response (vs. request).
   def split_sections(self, body, response):
     # Match sections, delimited by "// LLM: Section: <name>".
-    sections = re.split(r"// LLM:\s*(Omitted)?\s*Section:\s*([^\n]+)\s*\n", body)
+    sections = re.split(r"\/\/ LLM:\s*(Omitted)?\s*Section:\s*([^\n]+)\n", body)
     # Give the first section a name if it is missing.
     if (sections[0] == ""):
       # Delete the first empty string.
@@ -336,6 +337,10 @@ class PseudoMarkdownMessageBundler(MessageBundler):
           body, n = re.subn(r"^```(verilog)?\n(.*)\n+```\n?$", r"\2\n", body, flags=re.DOTALL)
           if n != 0:
             print("Warning: The \"verilog\" field of the response was contained in block quotes. They were stripped.")
+          
+          # Make sure the Verilog code ends with a newline (because we pattern match lines ending in newline).
+          if body != "" and body[-1] != "\n":
+            body += "\n"
           
           # Split the request and response Verilog into sections.
           [response_sections, response_omitted] = self.split_sections(body, True)
@@ -454,6 +459,8 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
   #  print(response_json)
   #  sys.exit(1)
 
+  must_reject = False
+
   # Response should include "modified", but if it is missing and "verilog" is present, assume "modified" is True.
   if "modified" not in response_obj and "verilog" in response_obj:
     response_obj["modified"] = True
@@ -462,117 +469,155 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
   # Check that this prompt produces are required fields.
   if (response_obj.get("modified", False) and "verilog" not in response_obj) or "modified" not in response_obj:
     print("Error: API response fields are incomplete or inconsistent.")
-    # TODO: Deal with this.
-    fail()
+    print("Rejecting response.")
+    must_reject = True
   for field in prompts[prompt_id].get("must_produce", []):
     if field not in response_obj:
       print("Error: API response is missing required field: " + field)
-      fail()
+      print("Rejecting response.")
+      must_reject = True
 
-  # Confirm.
-  print("")
-  print("The following response was received from the API, to replace the Verilog file:")
-  print("")
-  # Reformat the JSON into multiple lines and extract the verilog for cleaner printing.
-  code = response_obj.get("verilog")
-  if code:
-    response_obj["verilog"] = "See meld."
-  print(json.dumps(response_obj, indent=4))
-  if code:
-    #print("-------------")
-    #print(code)
-    #print("-------------")
-    # Repair the response.
-    response_obj["verilog"] = code
-  print("")
+  if not must_reject:
+    # Confirm.
+    print("")
+    print("The following response was received from the API, to replace the Verilog file:")
+    print("")
+    # Reformat the JSON into multiple lines and extract the verilog for cleaner printing.
+    code = response_obj.get("verilog")
+    if code:
+      response_obj["verilog"] = "See meld."
+    print(json.dumps(response_obj, indent=4))
+    if code:
+      #print("-------------")
+      #print(code)
+      #print("-------------")
+      # Repair the response.
+      response_obj["verilog"] = code
+    print("")
 
-  if "notes" in response_obj:
-    print("Notes:\n   " + response_obj["notes"].replace("\n", "\n   ") + "\n")
-
-  # Get working code.
-  working_code = ""
-  with open(working_verilog_file_name) as file:
-    working_code = file.read()
-  
-  # Correct "modified" if necessary.
-  modified = response_obj["modified"]  # As reported by the LLM, and updated to reflect reality.
-  if modified != ((code != None) and (code != working_code)):
-    if modified:
-      print("Note: API response indicates code was modified, but the code is unchanged.")
-      print("      No big deal. Correcting. (Will checkpoint anyway.)")
-      modified = False
-    else:
-      print("Note: API response includes code changes but reports \"modified\": false. Correcting.")
-      modified = True
-  
-  if "issues" in response_obj:
-    print("LLM reports the following issues:")
-    print("   " + response_obj["issues"].replace("\n", "\n   ") + "\n")
-  
-  # Save off working file.
-  os.system("mv " + working_verilog_file_name + " tmp/working.v")
-  # Write tmp/llm.v and working Verilog file with LLM's Verilog output.
-  code = response_obj["verilog"] if modified else working_code
-  with open("tmp/llm.v", "w") as file:
-    file.write(code)
-  with open(working_verilog_file_name, "w") as file:
-    file.write(code)
-  
-  # Prompt user to review, correct, and accept or reject the changes.
-  done = False
-  while not done:
-    ch = prompt("Verilog updated by LLM. Review in meld ([m] to open), edit as needed, and accept [a] or reject [r] this updated Verilog?", options=["a", "r", "m"], default="a")
-    if ch == "m":
-      # Open meld.
-      cmd = "meld tmp/llm.v " + working_verilog_file_name + " &"
-      print("Running: " + cmd)
-      os.system(cmd)
-    else:
-      done = True
-
-  # If rejected, restore the working Verilog file to the previous change.
-  # If accepted, checkpoint just the LLM's change first, then, if modified by the user,
-  # the user's changes.
-  
-  # Verilog changes are monitored using meld, comparing working file vs. feved.v (read-only symlink).
-  # TODO: The above must be maintained through commits and reverts.
-
-  if ch == "a":
-    # First checkpoint just the LLM's change.
-    if modified:
-      print("Checkpointing changes.")
-    else:
-      # LLM says no changes.
-      print("No changes were made for this refactoring step. (Checkpointing anyway.)")
+    # Get working code.
+    working_code = ""
+    with open(working_verilog_file_name) as file:
+      working_code = file.read()
     
-    # Checkpoint, whether modified or not.
-    # Capture the current Verilog file temporarily in tmp/tmp.v.
-    os.system("cp " + working_verilog_file_name + " tmp/tmp.v")
-    # Copy the LLM's Verilog file to the working Verilog file.
-    copy_if_different("tmp/llm.v", working_verilog_file_name)
-    # Checkpoint the LLM's change.
-    orig_status = readStatus()
-    status = { "by": "llm", "incomplete": response_obj.get("incomplete", False), "modified": modified }
-    if not modified:
-      # Reflect FEV and compile status from prior checkpoint.
-      status["compile"] = orig_status.get("compile")
-      status["fev"] = orig_status.get("fev")
-    # Apply combination of must_produce and may_produce fields to status.
-    for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
-      if field in response_obj:
-        status[field] = response_obj[field]
-    checkpoint(status)
+    # Correct "modified" if necessary.
+    modified = response_obj["modified"]  # As reported by the LLM, and updated to reflect reality.
+    if modified != ((code != None) and (code != working_code)):
+      if modified:
+        print("Note: API response indicates code was modified, but the code is unchanged.")
+        print("      No big deal. Correcting. (Will checkpoint anyway.)")
+        modified = False
+      else:
+        print("Note: API response includes code changes but reports \"modified\": false. Correcting.")
+        modified = True
+    
+    # Save off working file.
+    os.system("mv " + working_verilog_file_name + " tmp/working.v")
+    # Write tmp/llm.v and working Verilog file with LLM's Verilog output.
+    code = response_obj["verilog"] if modified else working_code
+    with open("tmp/llm.v", "w") as file:
+      file.write(code)
+    with open(working_verilog_file_name, "w") as file:
+      file.write(code)
+    
+    # Prompt user to review, correct, and accept or reject the changes.
+    done = False
+    while not done:
+      ch = prompt("Verilog updated by LLM. Review in meld ([m] to open), edit as needed, and accept [a] or reject [r] this updated Verilog?", options=["a", "r", "m"], default="a")
+      if ch == "m":
+        # Open meld.
+        cmd = "meld tmp/llm.v " + working_verilog_file_name + " &"
+        print("Running: " + cmd)
+        os.system(cmd)
+      else:
+        done = True
 
-    # Now, checkpoint the user's changes, if their are any.
-    copy_if_different("tmp/tmp.v", working_verilog_file_name)
-    checkpoint_if_pending()
+    # If rejected, restore the working Verilog file to the previous change.
+    # If accepted, checkpoint just the LLM's change first, then, if modified by the user,
+    # the user's changes.
+    
+    # Verilog changes are monitored using meld, comparing working file vs. feved.v (read-only symlink).
+    # TODO: The above must be maintained through commits and reverts.
 
-    # Response accepted, so delete llm_response.txt.
-    os.remove("llm_response.txt")
-  else:
-    # Revert to the prior change.
-    copy_if_different("tmp/working.v", working_verilog_file_name)
-    print("Changes rejected. Restored to prior version.")
+    if ch == "a":
+      # First checkpoint just the LLM's change.
+      if modified:
+        print("Checkpointing changes.")
+      else:
+        # LLM says no changes.
+        print("No changes were made for this refactoring step. (Checkpointing anyway.)")
+      
+      # Checkpoint, whether modified or not.
+      # Capture the current Verilog file temporarily in tmp/tmp.v.
+      os.system("cp " + working_verilog_file_name + " tmp/tmp.v")
+      # Copy the LLM's Verilog file to the working Verilog file.
+      copy_if_different("tmp/llm.v", working_verilog_file_name)
+      # Checkpoint the LLM's change.
+      orig_status = readStatus()
+      status = { "by": "llm", "incomplete": response_obj.get("incomplete", False), "modified": modified }
+      if not modified:
+        # Reflect FEV and compile status from prior checkpoint.
+        status["compile"] = orig_status.get("compile")
+        status["fev"] = orig_status.get("fev")
+      # Record plan.
+      if "plan" in response_obj:
+        status["plan"] = response_obj["plan"]
+      # Apply combination of must_produce and may_produce fields to status.
+      for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
+        if field in response_obj:
+          status[field] = response_obj[field]
+      checkpoint(status)
+
+      # Now, checkpoint the user's changes, if their are any.
+      copy_if_different("tmp/tmp.v", working_verilog_file_name)
+      checkpoint_if_pending()
+
+      # Response accepted, so delete llm_response.txt.
+      os.remove("llm_response.txt")
+    else:
+      # Revert to the prior change.
+      copy_if_different("tmp/working.v", working_verilog_file_name)
+      print("Changes rejected. Restored to prior version.")
+
+# Process JSON with newlines in strings into proper JSON.
+def from_extended_json(ejson):
+  # Iterate over the characters of raw_contents, keeping track of whether we are within a string, and replacing newlines with '\n'.
+  # For backward-compatibility with an old syntax, we replace "\n+" as well as "\n" with '\n'.
+  json_str = ""
+  in_string = False
+  after_newline = False
+  for c in ejson:
+    if after_newline:
+      if c == '+':
+        after_newline = False
+        continue
+      after_newline = False
+    if c == '"':
+      in_string = not in_string
+    if c == '\n' and in_string:
+      c = '\\n'
+      after_newline = True
+    json_str += c
+  return json_str
+
+# Convert a JSON string into a more readable version with newlines in strings.
+def to_extended_json(json_str):
+  # Iterate over the characters of the JSON string, keeping track of whether we are within a string, and replacing '\n' with newlines.
+  ejson = ""
+  in_string = False
+  prev_c = None
+  for c in json_str:
+    if c == '"':
+      in_string = not in_string
+    if prev_c == '\\' and c == 'n' and in_string:
+      prev_c = None
+      c = '\n'
+    if prev_c != None:
+      ejson += prev_c
+    prev_c = c
+  if prev_c != None:
+    ejson += prev_c
+  return ejson
 
 
 #############
@@ -594,10 +639,10 @@ if not os.path.exists(repo_dir + "/fev.sby") or not os.path.exists(repo_dir + "/
   usage()
 
 # Read prompts.json.
-# prompts.json is a slight extension to JSON to support newlines in strings. Lines beginning with "+" continue a string with an implied newline.
+# prompts.json is a slight extension to JSON supporting newlines in strings. Any newlines within quotes are replaced with '\n'.
 with open(repo_dir + "/prompts.json") as file:
   raw_contents = file.read()
-json_str = raw_contents.replace("\n+", "\\n")
+json_str = from_extended_json(raw_contents)
 prompts = json.loads(json_str)
 
 
@@ -650,14 +695,16 @@ def diff(file1, file2):
 def checkpoint(status, old_status = None):
   global mod_num
   # Carry over status from the prior checkpoint that is sticky (not in status_fields).
+  # Also, carry over "plan" within the refactoring step excluding "llm" checkpoints.
   if mod_num >= 0:
     old_status = readStatus()
   for field in old_status:
-    if field not in status and field not in status_fields:
+    # Some fields are provided by the LLM and are sticky only within the refactoring step.
+    if field in llm_status_fields:
+      if mod_num >= 0 and status.get("by") != "llm":
+        status[field] = old_status[field]
+    elif field not in status and field not in status_fields:
       status[field] = old_status[field]
-  # "incomplete" is sticky within a refactoring step or updated by LLM runs.
-  if mod_num >= 0 and status.get("by") != "llm" and not (old_status.get("incomplete") is None):
-    status["incomplete"] = old_status["incomplete"]
   
   # Capture the current Verilog file.
   mod_num += 1
@@ -760,8 +807,9 @@ def initialize_messages_json():
       if "background" in prompts[prompt_id]:
         message_obj["background"] = prompts[prompt_id]["background"]
       message_obj["prompt"] = prompt
-      message = message_bundler.obj_to_request(message_obj)
-      json.dump(llm_api.initPrompt(system, message), message_file, indent=4)
+      messages = message_bundler.obj_to_request(message_obj)
+      ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(system, messages), indent=4))
+      message_file.write(ejson_messages)
   except Exception as e:
     print("Error: Failed to initialize messages.json due to: " + str(e))
     fail()
@@ -1234,12 +1282,12 @@ while True:
             verilog = verilog_file.read()
             # Strip leading and trailing whitespace, then add trailing newline.
             verilog = verilog.strip() + "\n"
-            messages = message_file.read()
+            messages = json.loads(from_extended_json(message_file.read()))
             # Add "plan" field if given.
             status = readStatus()
             if "plan" in status:
               messages[-1].content += ("\n\nYou have already made some progress and have established this plan:\n\n" + status["plan"])
-            run_llm(json.loads(messages), verilog, "gpt-3.5-turbo" if key == "l" else "gpt-4-turbo")
+            run_llm(messages, verilog, "gpt-3.5-turbo" if key == "l" else "gpt-4-turbo")
     elif key == "e":
       fev_current(True)
     elif key == "f":
@@ -1253,10 +1301,17 @@ while True:
       confirm = True
       do_it = False
       last_mod = most_recent_mod()
+      # Scan the file for comments that should have been removed.
+      # Capture grep output to report problematic lines.
+      grep_output = os.popen("grep -E 'LLM: (New|Old) Task:' " + working_verilog_file_name).read()
+      grep_output += os.popen("grep -E '//\s*User:' " + working_verilog_file_name).read()
       if diff(working_verilog_file_name, mod_path() + "/" + working_verilog_file_name):
         print("Code edits are pending. You must run FEV (or revert) before accepting the refactoring changes.")
       elif status.get("fev") != "passed":
         print("FEV was not run on the current file or did not pass. Choose a different command.")
+      elif grep_output != "":
+        print("The following comments were found in the code that must be addressed before accepting the changes:")
+        print(grep_output)
       elif status.get("incomplete", True):
         if status.get("incomplete", False):
           print("LLM reported that the refactoring is incomplete.")

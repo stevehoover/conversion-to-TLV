@@ -174,6 +174,42 @@
 "prompt":
 "Identify non-deterministic code and summarize issues in the \"issues\" field of the response. Add \"TODO: LLM: ...\" comments to non-deterministic code to identify these issues and to provide suggested corrections where possible. Do not make any changes to the code at this time other than adding comments."
 },{
+"desc": "Avoid partial signal assignments",
+"prompt":
+"TL-Verilog currently only supports assignment statements that assign all bits of a signal. Try to eliminate all situations where an assignment statement's assigned signal (on the left-hand side of the \"=\") specifies an explicit bit range, such as \"foo[FOO_WIDTH-1:3] = ...;\". Bit ranges used on the right-hand side of an assignment statement are not a problem.
++
++In the simplest case, the specified bit range might refer to the entire signal, in which case, it can be removed. If different bit ranges of a signal are assigned by different statements, attempt to refactor the code. A few strategies are possible:
++
++Multiple assignments can be turned into one by using concatenation. This requires the assigned bit ranges to be contiguous. For example, in this code:
++
++```verilog
++logic y[7:0];
++assign y[3:0] = a;
++assign y[7:4] = b;
++```
++
++`y[7:4]` and `y[3:0]` are contiguous and comprise the complete signal `y`. We combine their assignments by concatenating their left-hand-sides as:
++
++```verilog
++logic y[7:0];
++assign y = {b, a};
++```
++
++Another approach is to define intermediate signals for the partial bit ranges. In the example above, the original code, separately assigning `y[3:0]` and `y[7:4]` could alternatively have been refactored as:
++
++```verilog
++logic [7:0] y;
++logic [3:0] y_low;   // LLM: Temporary: Intermediate signal for partial assignment.
++logic [7:4] y_high;  // LLM: Temporary: Intermediate signal for partial assignment.
++assign y_low = a;
++assign y_high = b;
++assign y = {y_high, y_low};  // LLM: Temporary: Combined the partial assignments.
++```
++
++This strategy preserves the structure of the various assignments of the signal. It can be the best choice for signals whose various bit ranges are assigned under different conditions within an always block.
++
++Look for assignment statements that assign a partial bit range of a signal and refactor the code to eliminate these partial assignments. If you find any partial assignments that are difficult to refactor, report them in the \"issues\" field of the response and add \"TODO: LLM: ...\" comments to identify these issues in the code."
+},{
 "desc": "Replace if/else with ternary expressions",
 "prompt":
 "For signals assigned in all cases of an inner-most `if`/`else` statement or chain. Transform the signal's assignments into a ternary expression. For example, transform:
@@ -249,7 +285,7 @@
 +...
 +```
 +
-+This might complete the refactoring step.
++This would complete the refactoring of `y`, and there is nothing more to do for `z` either.
 +
 +As you go through the Verilog code, you may find that it already contains ternary expressions. Since these look like refactoring progress, but are not, mark them with comments like \"// LLM: Temporary: Nothing changed here.\" Otherwise you might mistakenly believe you have made forward progress when you have not. Since these will be removed from your response they will have no other impact and will cause no harm."
 },{
