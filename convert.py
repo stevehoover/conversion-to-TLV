@@ -9,19 +9,21 @@
 # This script works with these files:
 #  - <module_name>_orig.v: The trusted Verilog module to convert. This is the original file for the current conversion step.
 #  - <module_name>.v: The current WIP refactored/modified Verilog module, against which FEV will be run.
-#  - prompt_id.txt: A file containing the ID number of the prompt for this step. (The actual prompt may have been modified by the human.)
+#  - prompt_id.txt: A file containing, e.g. {"id": 5, "desc": "Update clocks"}, the ID and desc field of the current prompt.
+#                  (Formerly, this was just an ID number.) (Note, the actual prompt may have been modified manually.)
 #  - messages.json: The messages to be sent to the LLM API (as in the ChatGPT API).
+#  - chkpt.v: A link to the last checkpointed Verilog file.
 # Additionally, these files may be created and captured in the process:
 #  - tmp/fev.sby & tmp/fev.eqy: The FEV script for this conversion job.
-#  - tmp/llm.v, tmp/tmp.v, tmp/working.v: Temporary versions of the Verilog used after LLM runs before LLM and/or human changes are accepted/rejected.
-#  - <module_name>_prep.v: The file sent to the LLM API.
-#  - <module_name>_llm.v: The LLM output file.
+#  - tmp/m5/*: Temporary files used for M5 preprocessing of a prompt.
+#  - tmp/pre_llm.v: The Verilog file sent to the LLM API.
+#  - tmp/llm.v: The LLM output Verilog file.
 #  - llm_response.txt: The LLM response file.
 #
 # A history of all refactoring steps is stored in history/#, where "#" is the "refactoring step", starting with history/1.
 # This directory is initialized when the step is begun, and fully populated when the refactoring change is accepted.
 # Contents includes:
-#   - history/#/prompt_id.txt: (on init) The ID of the prompt used for this refactoring step. (The actual prompt may have been modified by the human.)
+#   - history/#/prompt_id.txt: As above
 #   - history/#/<module_name>.v: The refactored file at each step.
 #   - history/#/messages.json: The messages sent to the LLM API for each step.
 # Although Git naturally captures a history, it may be desirable to capture this folder in Git, simply for convenience, since it may be desirable to
@@ -58,7 +60,7 @@
 # <repo>/prompts.json contains the default prompts used for refactoring steps as a JSON array of objects with the following fields:
 #   - desc: a brief description of the refactoring step
 #   - backgroud: (opt) background information that may be relevant to this refactoring step
-#   - prompt: prompt string
+#   - prompt: prompt string, preprocess using M5 (if necessary), passing M5 variables from sticky fields
 #   - must_produce: (opt) an array of strings representing sticky fields that the LLM must produce in its response
 #   - may_produce: (opt) an array of strings representing sticky fields that the LLM may produce in its response.
 #   - if: (opt) an object with fields that represent values of sticky fields; if given and any match, this prompt will be used ("" matches undefined)
@@ -77,8 +79,9 @@
 #   Note that history/#/mod_#/ can be traced backward to determine what has been done so far.
 
 #
-# This is a command-line utility which prompts the user for input. Edits to <module_name>.v and/or prompt.txt can be made while input is pending.
-# It is suggested to have <module_name>.v and prompt.txt open in an editor and in a diff utility, such as meld, while running this script. Users
+# This is a command-line utility which prompts the user for input. Edits to <module_name>.v can be made manually.
+# It is suggested to have <module_name>.v open in an editor and in a diff utility, such as meld (prompted and launched by this script), while running this script.
+# Additionally, messages.json (and the "plan" field of status.json) may be modified manually before running the LLM. Users
 # must be careful to save files before responding to prompts.
 #
 # To begin each step, the user is given instructions and prompted for input.
@@ -97,11 +100,39 @@ from abc import ABC, abstractmethod
 import json
 import re
 import shutil
+import stat
 
 # Confirm that we're using Python 3.7 or later (as we rely on dictionaries to be ordered).
 if sys.version_info < (3, 7):
   print("Error: This script requires Python 3.7 or later.")
   sys.exit(1)
+
+
+###################
+# Generic Helpers #
+###################
+
+# Lock a file to prevent writing, as:
+# with FileLocked("file.txt"):
+#   # Do stuff with file.txt
+class FileLocked:
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.original_permissions = None
+
+    def __enter__(self):
+        # Get the current permissions
+        self.original_permissions = os.stat(self.filepath).st_mode
+        # Remove write permissions (make file read-only)
+        os.chmod(self.filepath, self.original_permissions & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        # Restore original permissions
+        os.chmod(self.filepath, self.original_permissions)
+
+
+
 
 ###################################
 # Abstract Base Class for LLM API #
@@ -166,6 +197,7 @@ class MessageBundler:
 class OpenAI_API(LLM_API):
   name = "OpenAI"
   model = "gpt-3.5-turbo"   # default model (can be overridden in run(..))
+                            # Reasoning models: "o1-preview", "o1-mini"
 
   def __init__(self):
     super().__init__()
@@ -189,6 +221,7 @@ class OpenAI_API(LLM_API):
     
     # Init OpenAI.
     self.client = OpenAI() if self.org_id is None else OpenAI(organization=self.org_id)
+    models = self.client.models
     self.models = self.client.models.list()
   
   def validateModel(self, model):
@@ -198,8 +231,7 @@ class OpenAI_API(LLM_API):
       print("Error: Model " + model + " not found.")
       fail()
 
-  # Set up the initial messages object for the current refactoring step based on the given system message and prompt
-  # (from this step's prompt.txt).
+  # Set up the initial messages object for the current refactoring step based on the given system message and message parameter.
   def initPrompt(self, system, message):
     return [
       {"role": "system", "content": system},
@@ -219,6 +251,7 @@ class OpenAI_API(LLM_API):
     # Call the API.
     print("\nCalling " + model + "...")
     # TODO: Not supported in ChatGPT-3.5: response_format = {"type": "json_object"}
+    # TODO: o1-preview model reports: {'message': "Unsupported value: 'messages[0].role' does not support 'system' with this model.", 'type': 'invalid_request_error', 'param': 'messages[0].role', 'code': 'unsupported_value'"}
     api_response = self.client.chat.completions.create(model=model, messages=messages, max_tokens=3000, temperature=0.0)
     print("Response received from " + model)
 
@@ -263,6 +296,9 @@ class PseudoMarkdownMessageBundler(MessageBundler):
       separator = "\n\n"
     return content
 
+  # TODO: Maybe this notion of sections should be replaced with an option for responses to
+  # use "\n...\n" to omit portions of code. Yes... do this!
+  #
   # Split a Verilog file into sections delimited by "// LLM: [Omitted ]Section: <name>"
   # (as described in default_system_message.txt).
   # body: The Verilog code from a "verilog" field of an LLM request or response.
@@ -400,7 +436,7 @@ def changes_pending():
 
 # See if there were any manual edits to the Verilog file and capture them in the history if so.
 def checkpoint_if_pending():
-  # if latest mod file exists and is different from working file, checkpoint it.
+  # if latest mod file exists and is different from working file, checkpoint working file.
   if changes_pending():
     print("Manual edits were made and are being checkpointed.")
     checkpoint({ "by": "human" })
@@ -416,13 +452,12 @@ def copy_if_different(src, dest):
 # messages: The messages.json object in OpenAI format.
 # verilog: The current Verilog file contents.
 def run_llm(messages, verilog, model="gpt-3.5-turbo"):
-  checkpoint_if_pending()
 
   # Run the LLM, passing the messages.json and verilog file contents.
 
   # Confirm.
   print("")
-  print("The following prompt will be sent to the API together with the Verilog and prior messages:")
+  print("The following prompt will be sent to " + model + "'s API together with the Verilog and prior messages:")
   print("")
   print(messages[-1]["content"])
   print("")
@@ -430,10 +465,17 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
 
   # If there is already a response, prompt the user about possibly reusing it.
   # TODO: Consider using a disk/DB memoization library to cache responses, such as https://grantjenks.com/docs/diskcache/.
-  ch = "n"
+  reuse_llm_response = "n"
   if os.path.exists("llm_response.txt"):
-    ch = prompt("There is already a response to this prompt. Would you like to reuse it [y/N]?")
-  if ch == "y":
+    reuse_llm_response = prompt("There is already a response to this prompt. Would you like to reuse it [y/N]?")
+
+  #+ with: FileLocked(working_verilog_file_name):
+  checkpoint_if_pending()
+  # Capture working file as the version we'll send to the LLM.
+  # TODO: Should do a better job of snapshotting the working file for checkpoint_if_pending() and this mv, below.
+  os.system("cp " + working_verilog_file_name + " tmp/pre_llm.v")
+
+  if reuse_llm_response == "y":
     # Use llm_response.txt.
     with open("llm_response.txt") as file:
       response_str = file.read()
@@ -496,13 +538,13 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
     print("")
 
     # Get working code.
-    working_code = ""
+    pre_llm_code = ""
     with open(working_verilog_file_name) as file:
-      working_code = file.read()
-    
+      pre_llm_code = file.read()
+
     # Correct "modified" if necessary.
     modified = response_obj["modified"]  # As reported by the LLM, and updated to reflect reality.
-    if modified != ((code != None) and (code != working_code)):
+    if modified != ((code != None) and (code != pre_llm_code)):
       if modified:
         print("Note: API response indicates code was modified, but the code is unchanged.")
         print("      No big deal. Correcting. (Will checkpoint anyway.)")
@@ -511,12 +553,11 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
         print("Note: API response includes code changes but reports \"modified\": false. Correcting.")
         modified = True
     
-    # Save off working file.
-    os.system("mv " + working_verilog_file_name + " tmp/working.v")
     # Write tmp/llm.v and working Verilog file with LLM's Verilog output.
-    code = response_obj["verilog"] if modified else working_code
+    code = response_obj["verilog"] if modified else pre_llm_code
     with open("tmp/llm.v", "w") as file:
       file.write(code)
+    #+ END WITH
     with open(working_verilog_file_name, "w") as file:
       file.write(code)
     
@@ -526,7 +567,7 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       ch = prompt("Verilog updated by LLM. Review in meld ([m] to open), edit as needed, and accept [a] or reject [r] this updated Verilog?", options=["a", "r", "m"], default="a")
       if ch == "m":
         # Open meld.
-        cmd = "meld tmp/llm.v " + working_verilog_file_name + " &"
+        cmd = "meld feved.v chkpt.v " + working_verilog_file_name + " &"
         print("Running: " + cmd)
         os.system(cmd)
       else:
@@ -547,14 +588,9 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
         # LLM says no changes.
         print("No changes were made for this refactoring step. (Checkpointing anyway.)")
       
-      # Checkpoint, whether modified or not.
-      # Capture the current Verilog file temporarily in tmp/tmp.v.
-      os.system("cp " + working_verilog_file_name + " tmp/tmp.v")
-      # Copy the LLM's Verilog file to the working Verilog file.
-      copy_if_different("tmp/llm.v", working_verilog_file_name)
-      # Checkpoint the LLM's change.
+      # Checkpoint the LLM's change, whether modified or not.
       orig_status = readStatus()
-      status = { "by": "llm", "incomplete": response_obj.get("incomplete", False), "modified": modified }
+      status = { "by": "llm", "incomplete": response_obj.get("incomplete", False), "modified": modified, "initial": False }
       if not modified:
         # Reflect FEV and compile status from prior checkpoint.
         status["compile"] = orig_status.get("compile")
@@ -566,18 +602,17 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
         if field in response_obj:
           status[field] = response_obj[field]
-      checkpoint(status)
+      checkpoint(status, orig_status, "tmp/llm.v")
 
       # Now, checkpoint the user's changes, if their are any.
-      copy_if_different("tmp/tmp.v", working_verilog_file_name)
       checkpoint_if_pending()
 
       # Response accepted, so delete llm_response.txt.
       os.remove("llm_response.txt")
     else:
       # Revert to the prior change.
-      copy_if_different("tmp/working.v", working_verilog_file_name)
-      print("Changes rejected. Restored to prior version.")
+      copy_if_different("tmp/pre_llm.v", working_verilog_file_name)
+      print("Changes rejected. Restored to code prior to running LLM.")
 
 # Process JSON with newlines in strings into proper JSON.
 def from_extended_json(ejson):
@@ -644,6 +679,14 @@ with open(repo_dir + "/prompts.json") as file:
   raw_contents = file.read()
 json_str = from_extended_json(raw_contents)
 prompts = json.loads(json_str)
+# Also provide a dictionary of prompts indexed by desc.
+prompts_by_desc = {}
+for prompt in prompts:
+  desc = prompt["desc"]
+  if desc in prompts_by_desc:
+    print("Error: Duplicate prompt description: " + desc)
+    fail()
+  prompts_by_desc[desc] = prompt
 
 
 ####################
@@ -688,11 +731,20 @@ def fev_passed():
 def diff(file1, file2):
   return os.system("diff -q '" + file1 + "' '" + file2 + "' > /dev/null") != 0
 
+def update_chkpt():
+  os.system("ln -sf " + mod_path() + "/" + working_verilog_file_name + " chkpt.v")
+
+def update_feved():
+  os.system("ln -sf " + most_recently_feved_verilog_file() + " feved.v")
+
 # Capture Verilog file in a new history/#/mod_#/, and if this was an LLM modification, capture messages.json and llm_response.txt.
 #  status: The status to save with the checkpoint, updated as new status.
 #  old_status: For use only for the first checkpoint of a refactoring step. This is the status from the prior refactoring step.
+#  verilog_file: The verilog file to capture (defaulted to working_verilog_file_name and checkpointed as working_verilog_file_name regardless).
 # Sticky status is applied from current status. Status["incomplete"] will be carried over from the prior checkpoint for non-LLM updates.
-def checkpoint(status, old_status = None):
+def checkpoint(status, old_status = None, verilog_file = None):
+  if verilog_file is None:
+    verilog_file = working_verilog_file_name
   global mod_num
   # Carry over status from the prior checkpoint that is sticky (not in status_fields).
   # Also, carry over "plan" within the refactoring step excluding "llm" checkpoints.
@@ -706,18 +758,22 @@ def checkpoint(status, old_status = None):
     elif field not in status and field not in status_fields:
       status[field] = old_status[field]
   
-  # Capture the current Verilog file.
+  # Capture the current Verilog file in new mod dir and update chkpt.v.
   mod_num += 1
   mod_dir = mod_path()
   os.mkdir(mod_dir)
-  os.system("cp " + working_verilog_file_name + " " + mod_dir)
+  os.system("cp " + verilog_file + " " + mod_dir + "/" + working_verilog_file_name)
 
-  # Capture messages.json if this was an LLM modification.
+  # Capture messages.json and llm_response.txt if this was an LLM modification.
   if status.get("by") == "llm":
     os.system("cp messages.json llm_response.txt " + mod_dir)
   
   # Write status.json.
   writeStatus(status)
+
+  # Update chkpt.v and feved.v links to reflect this new checkpoint.
+  update_chkpt()
+  update_feved()
 
   # Make Verilog file read-only (to prevent inadvertent modification, esp. in meld).
   # ("status.json" may still be updated with FEV status.)
@@ -727,13 +783,18 @@ def checkpoint(status, old_status = None):
 # Create a reversion checkpoint as a symlink, or if the previous change was a reversion, update its symlink.
 def checkpoint_reversion(prev_mod):
   global mod_num
+  # Prepare to create a new reversion checkpoint.
   if os.path.islink(mod_path()):
+    # Remove old reversion symlink.
     os.remove(mod_path())
   else:
+    # Must create a new reversion checkpoint.
     mod_num += 1
+  # Create reversion symlink.
   os.symlink("mod_" + str(prev_mod), mod_path())
-  # Update feved.v to link to the most-recent FEVed Verilog.
-  os.system("ln -sf " + most_recently_feved_verilog_file() + " feved.v")
+  # Update chkpt.v and feved.v links to reflect this reversion.
+  update_chkpt()
+  update_feved()
 
 def readStatus(mod = None):
   # Default mod to mod_num
@@ -751,6 +812,28 @@ def writeStatus(status):
   with open(mod_path() + "/status.json", "w") as file:
     json.dump(status, file)
 
+# Process a prompt using M5.
+def processPromptWithM5(prompt, status):
+  # Pass fields of status to M5 as var(status_<field>, <value>).
+  status_m5 = ""
+  for field in status:
+    status_m5 += "var(status_" + field + ", \"" + status[field] + "\")"
+  status_m5 = "m5_eval(" + status_m5 + ")"
+  # Run M5.
+  # Delete and create tmp/m5/.
+  os.system("rm -rf tmp/m5")
+  os.mkdir("tmp/m5")
+  # Preppend m5_status to prompt.
+  prompt = status_m5 + prompt
+  # Write prompt to tmp/m5/prompt.txt.m5.
+  with open("tmp/m5/prompt.txt.m5", "w") as file:
+    file.write(prompt)
+  # Run M5.
+  os.system(repo_dir + "/M5/bin/m5 --obj_dir tmp/m5 tmp/m5/prompt.txt.m5 > tmp/m5/prompt.txt")
+  # Read prompt.txt.
+  with open("tmp/m5/prompt.txt") as file:
+    prompt = file.read()
+  return prompt
 
 # Print the main user prompt.
 def print_prompt():
@@ -758,7 +841,7 @@ def print_prompt():
   print("   | " + prompts[prompt_id]["desc"].replace("\n", "\n   | "))
   print("  ")
   print("  Make edits and enter command characters until a candidate is accepted or rejected. Generally, the sequence is:")
-  print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + " and/or prompt.txt.")
+  print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + " and/or messages.json.")
   print("    - l/L: (optional) Run the LLM step. (If this fails or is incomplete, make any further manual edits and try again.)")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + ". (You may use \"f\" to run FEV first.)")
   print("    - e/f: Run FEV (EQY/Yosys). (If this fails, make further manual Verilog edits and try again.).")
@@ -766,8 +849,8 @@ def print_prompt():
   print("  (At any time: use \"n\" to undo changes; \"h\" for help; \"x\" to exit.)")
   print("  ")
   print("  Enter one of the following commands:")
-  print("    l/L: LLM. Send the current prompt.txt to the LLM (gpt-3.5-turbo/gpt-4-turbo).")
-  print("    e/f/o: Run FEV (EQY/Yosys) on the current code (or EQY vs. [o]riginal).")
+  print("    l/L/M: LLM. Send the current prompt to the LLM (gpt-3.5-turbo/gpt-4-turbo/[M]odel-of-choice).")
+  print("    e/f/E: Run FEV (EQY/Yosys) on the current code (or [E]QY vs. original).")
   print("    y: Yes. Accept the current code as the completion of this refactoring step (if FEV already run and passed).")
   print("    u: Undo. Revert to a previous version of the code.")
   print("    U: Redo. Reapply a reverted code change (possible until next modification or exit).")
@@ -797,9 +880,13 @@ def initialize_messages_json():
     # Initialize messages.json.
     with open("messages.json", "w") as message_file:
       prompt = prompts[prompt_id]["prompt"]
+      # Search prompt string for "m5_" and use M5 if found.
+      if prompt.find("m5_") != -1:
+        prompt = processPromptWithM5(prompt, readStatus())
       # Add "needs" fields to the prompt.
       if "needs" in prompts[prompt_id]:
         prompt += "\n\n" + "Note that the following attributes have been determined about the Verilog code:"
+        status = readStatus()
         for field in prompts[prompt_id]["needs"]:
           prompt += "\n   " + field + ": " + status.get(field, "")
       message_obj = {}
@@ -807,15 +894,15 @@ def initialize_messages_json():
       if "background" in prompts[prompt_id]:
         message_obj["background"] = prompts[prompt_id]["background"]
       message_obj["prompt"] = prompt
-      messages = message_bundler.obj_to_request(message_obj)
-      ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(system, messages), indent=4))
+      message = message_bundler.obj_to_request(message_obj)
+      ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(system, message), indent=4))
       message_file.write(ejson_messages)
   except Exception as e:
     print("Error: Failed to initialize messages.json due to: " + str(e))
     fail()
 
 
-# Function to initialize the conversion directory for the next refactoring step.
+# Initialize the conversion directory for the next refactoring step.
 def init_refactoring_step():
   global refactoring_step, mod_num, prompt_id
 
@@ -874,7 +961,11 @@ def init_refactoring_step():
 
   # Write prompt_id.txt.
   with open("prompt_id.txt", "w") as file:
-    file.write(str(prompt_id))
+    # Make sure there are no double quotes in the description.
+    if prompts[prompt_id]["desc"].find('"') != -1:
+      print("Error: The description of prompt " + str(prompt_id) + " contains a double quote.")
+      fail()
+    file.write('{"id": ' + str(prompt_id) + ', "desc": "' + prompts[prompt_id]["desc"] + '"}')
   # Make history/# directory and populate it.
   os.mkdir("history/" + str(refactoring_step))
   os.system("cp prompt_id.txt history/" + str(refactoring_step) + "/")
@@ -932,21 +1023,24 @@ def run_fev(orig_file_name, working_verilog_file_name, use_eqy = True):
   # TODO: If failed, bundle failure info for LLM, and call LLM (with approval).
   return proc.returncode == 0
 
-# Run FEV against the last successfully FEVed code (if not in this refactoring step, the the original code for this step).
+# Run FEV against the last successfully FEVed code (if not in this refactoring step, the original code for this step).
+# Checkpoint the code first and FEV vs. this checkpoint.
 # Update status.json.
 # use_eqy: Use EQY instead of SymbiYosys.
-# use_original: Use the original code instead of the most recently FEVed code.
+# use_original: Use the original code (history/1/mod_0) instead of the most recently FEVed code.
 def fev_current(use_eqy = True, use_original = False):
+  
+  checkpoint_if_pending()
+
+  checkpointed_verilog_file = mod_path() + "/" + working_verilog_file_name
 
   # This is a good time to strip temporary comments from the LLM and change New Task comments to Old Task.
   # We've found it sometimes convenient to ask the LLM to insert these so it doesn't forget what it has done.
-  os.system("sed -i '/^\s*\/\/\s*LLM:\s*Temporary:.*/d' " + working_verilog_file_name)  # Whole line.
+  os.system("sed -i '/^\s*\/\/\s*LLM:\s*Temporary:.*/d' " + checkpointed_verilog_file)  # Whole line.
   # Also remove these at the end of a line without deleting the line.
-  os.system("sed -i '/^\s*\/\/\s*LLM:\s*Temporary:.*//' " + working_verilog_file_name)
+  os.system("sed -i 's/^\s*\/\/\s*LLM:\s*Temporary:.*//' " + checkpointed_verilog_file)
   # Change "New Task" to "Old Task".
-  os.system("sed -i 's/\/\/\s*LLM:\s*New Task:/\/\/ LLM: Old Task:/' " + working_verilog_file_name)
-  
-  checkpoint_if_pending()
+  os.system("sed -i 's/\/\/\s*LLM:\s*New Task:/\/\/ LLM: Old Task:/' " + checkpointed_verilog_file)
 
   status = readStatus()
   # Get the most recently FEVed code (mod with status["fev"] == "passed").
@@ -954,7 +1048,7 @@ def fev_current(use_eqy = True, use_original = False):
   
   print("Running FEV against " + orig_file_name + ". Diff:")
   print("==================")
-  diff_status = os.system("diff " + orig_file_name + " " + working_verilog_file_name)
+  diff_status = os.system("diff " + orig_file_name + " " + checkpointed_verilog_file)
   print("==================")
   
   ret = False
@@ -962,22 +1056,21 @@ def fev_current(use_eqy = True, use_original = False):
   if diff_status == 0:
     print("No changes to FEV. Choose a different command.")
     status["fev"] = "passed"
-    writeStatus(status)
     ret = True
   else:
     # Run FEV.
-    ret = run_fev(orig_file_name, working_verilog_file_name, use_eqy)
+    ret = run_fev(orig_file_name, checkpointed_verilog_file, use_eqy)
 
     if ret:
       print("FEV passed.")
       status["fev"] = "passed"
-      # Update feved.v to link to newly-FEVed code.
-      os.system("ln -sf " + mod_path() + "/" + working_verilog_file_name + " feved.v")
     else:
       print("Error: FEV failed. Try again.")
       status["fev"] = "failed"
-    
-    writeStatus(status)
+  writeStatus(status)
+  # Update feved.v to link to newly-FEVed code.
+  if status["fev"] == "passed":
+    update_feved()
    
   return ret
 
@@ -1091,6 +1184,32 @@ def get_command(options):
     else:
       return ch
 
+# Read the prompt ID from the given file.
+def read_prompt_id(file):
+  prompt_id = json.loads(f.read())
+  # Two formats are supported. This is either a number or {"id": number, "desc": "description"}.
+  if type(prompt_id) == dict:
+    # Verify that the description matches the prompt.
+    desc = prompt_id["desc"]
+    id = prompt_id["id"]
+    if prompts[id]["desc"] != desc:
+      # Prompts have changed. See if we can identify the proper ID by looking up the description in prompts_by_desc.
+      if desc in prompts_by_desc:
+        id = prompts_by_desc[desc]["id"]
+        # Report the correction.
+        print("Warning: Prompts have been changed. Corrected ID " + prompt_id + " to " + id + " for current prompt: \"" + desc + "\".")
+      else:
+        print("\nError: The description in \"prompt_id.txt\" does not match any prompt description in prompts.json.")
+        print("       The description in \"prompt_id.txt\" is: \"" + desc + "\".")
+        print("       The descriptions for ID " + prompt_id + " in prompts.json is:" + prompts[prompt_id]["desc"] + "\".")
+        # Continue?
+        ch = prompt("Continue with the current prompt ID?", {"y", "n"}, "n")
+        if ch == "n":
+          fail()
+    # Correct the prompt ID.
+    prompt_id = id
+  return prompt_id
+
 # Catch signals for proper cleanup.
 
 # Define a handler for signals that will perform cleanup
@@ -1159,6 +1278,19 @@ module_name = working_verilog_file_name.split(".")[0]
 #llm_verilog_file_name = module_name + "_llm.v"
 
 
+# Make sure files have proper permissions.
+# <module>.v (working_verilog_file_name) should be writable.
+if not os.access(working_verilog_file_name, os.W_OK):
+  print("Error: The Verilog file " + working_verilog_file_name + " must be writable.")
+  # Prompt the user to add user and group permissions.
+  ch = prompt("Add user and group write permissions to " + working_verilog_file_name + "?", {"y", "n"}, "y")
+  if ch == "y":
+    os.system("chmod ug+w " + working_verilog_file_name)
+    print("Permissions added.")
+  else:
+    print("Exiting.")
+    fail()
+
 
 ####################
 # Initialize state #
@@ -1194,7 +1326,7 @@ else:
   while cn >= 0 and prompt_id == 0:
     if os.path.exists("history/" + str(cn) + "/prompt_id.txt"):
       with open("history/" + str(cn) + "/prompt_id.txt") as f:
-        prompt_id = int(f.read())
+        prompt_id = read_prompt_id(f)
     cn -= 1
   
   # If messages.json is older than prompts.json or default_system_message.txt, reinitialize it.
@@ -1265,10 +1397,41 @@ while True:
   while True:
     # Get the user's command as a single key press (without <Enter>) using pynput library.
     # TODO: Replay get_command(..) in favor of prompt(..).
-    key = get_command(["l", "L", "e", "f", "o", "y", "u", "U", "c", "p", "h", "?", "x"])
+    key = get_command(["l", "L", "M", "e", "f", "E", "y", "u", "U", "c", "p", "h", "?", "x"])
 
     # Process the user's command.
-    if key == "l" or key == "L":
+    if key == "l" or key == "L" or key == "M":
+      # Determine model.
+      model = None
+      if key == "l":
+        model = "gpt-3.5-turbo"
+      elif key == "L":
+        model = "gpt-4-turbo"
+      elif key == "M":
+        # Print a list of models by number, and let the user choose one.
+        print("Choose a model:")
+        for i in range(len(llm_api.models.data)):
+          if hasattr(llm_api.models.data[i], 'id'):
+            # Use letters for the models (a-zA-Z), so we can represent them in a single character.
+            ch = chr(ord('a') + i) if i < 26 else chr(ord('A') + i - 26)
+            print(f"  {ch}: {llm_api.models.data[i].id}")
+        while True:
+          model_char = prompt("Enter the model letter.")
+          o = ord(model_char)
+          model_num = -1
+          if o >= ord('a') and o <= ord('z'):
+            model_num = o - ord('a')
+          elif o >= ord('A') and o <= ord('Z'):
+            model_num = o - ord('A') + 26
+          if model_num < 0 or model_num >= len(llm_api.models.data) or not hasattr(llm_api.models.data[i], 'id'):
+            print("Error: Invalid model ID. Choose a different command.")
+          else:
+            model = llm_api.models.data[model_num].id
+            break
+      else:
+        print("Bug: Invalid model.")
+        fail()
+      
       # Run the LLM (if not already run).
       do_it = True
       if llm_finished():
@@ -1287,12 +1450,12 @@ while True:
             status = readStatus()
             if "plan" in status:
               messages[-1].content += ("\n\nYou have already made some progress and have established this plan:\n\n" + status["plan"])
-            run_llm(messages, verilog, "gpt-3.5-turbo" if key == "l" else "gpt-4-turbo")
+            run_llm(messages, verilog, model)
     elif key == "e":
       fev_current(True)
     elif key == "f":
       fev_current(False)
-    elif key == "o":
+    elif key == "E":
       fev_current(True, True)
     elif key == "y":
       status = readStatus()
@@ -1342,7 +1505,7 @@ while True:
 
     elif key == "p":
       # Adjust the current prompt, skipping ahead or jumping back, chosen from a complete listing.
-      # Permit this only if the current prompt was was just begun.
+      # Permit this only if the current prompt was just begun.
       if most_recent_mod() != None:
         print("Error: You may only apply a specific prompt when the current prompt was just begun.")
         print("       Use \"u\" to revert to the beginning of the current prompt.")
@@ -1351,7 +1514,7 @@ while True:
       print("Prompts:")
       for i in range(len(prompts)):
         print(f"  {i}: {prompts[i]['desc']}")
-      print("\nNote: It may necessary to manually update \"status.json\" to reflect values provided/consumed by LLM/prompts, then exit/restart.\n")
+      print("\nNote: It may be necessary to manually update \"status.json\" to reflect values provided/consumed by LLM/prompts, then exit/restart.\n")
       # Get the prompt number.
       print("Enter the prompt number to apply.")
       print("> ", end="")
@@ -1408,7 +1571,7 @@ while True:
           # Determine the updated prompt ID.
           if refactoring_step > 0:
             with open("history/" + str(refactoring_step) + "/prompt_id.txt") as f:
-              next_prompt_id = int(f.read())
+              next_prompt_id = read_prompt_id(f)
           else:
             next_prompt_id = 0
           

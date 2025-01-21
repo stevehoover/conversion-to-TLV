@@ -23,13 +23,13 @@ A command-line Python script (`convert.py`) controls the interactions with the L
 
 If any step in the process fails, the script will ask either the LLM or the human for assistance.
 
-All updates performed by the script are captured in the file system so the script can be terminated and restarted, picking up where it left off. A complete history of changes is maintained with an ability to revert.
+All updates performed by the script are captured in the file system so the script can be terminated and restarted, picking up where it left off. A complete history of changes is maintained with an ability to revert. These files can later be used as training data for an LLM to improve the process.
 
 After refactoring the Verilog, the Verilog can be converted to TL-Verilog and refactored further.
 
-This flow chart illustrates the conversion process provided by `convert.py`, though it should be taken with a grain of salt, as this is an actively-changing project, and this diagram may not be maintained.
+This flow chart illustrates the conversion process provided by `convert.py`. It is maintained as a Google Slide [here](https://docs.google.com/presentation/d/1DrzpY_SHGRrRTwy-Qn1yxRMDGkBcj451uwVKhUJ295I/edit?usp=sharing). (To update, request permission, edit, download as PNG and place in docs/VerilogConversionFlow.png.)
 
-![Conversion Flow Image](./conversion_flow.png)
+![Conversion Flow Image](./docs/VerilogConversionFlow.png)
 
 ## Status
 

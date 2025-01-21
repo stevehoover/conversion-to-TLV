@@ -1,0 +1,3 @@
+[submodule "M5"]
+	path = M5
+	url = https://github.com/rweda/M5

@@ -495,7 +495,7 @@
 },{
 "desc": "Individual flip-flops",
 "prompt":
-"Use a separate `always_ff` blocks for each flopped signal. Each blocks may be written on a single line without `begin`/`end`, such as: `always_ff @(posedge clk) y <= NEXT_y;`."
+"For `always_ff` blocks that assign multiple signals, break them into separate `always_ff` blocks, one for each flopped signal. Each block may be written on a single line without `begin`/`end`, such as: `always_ff @(posedge clk) y <= NEXT_y;`."
 },{
 "desc": "Short always blocks",
 "prompt":
