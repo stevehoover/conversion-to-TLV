@@ -1,26 +1,6 @@
 [{
 "desc": "Initial code"
 }, {
-"desc": "Module declaration",
-"prompt": "The Verilog file should declare a single module. If the file contains multiple modules or no module, report an issue using the \"issue\" field of the response."
-}, {
-"desc": "Code sections",
-"prompt": "Partition the code into three sections: \"Begin File\", \"Begin Body\", and \"End Body\". Each section will be identified by a header comment line including its name, as \"// LLM: Section: <name>\" (with no preceding whitespace). The first section of the file will be named \"Begin File\", so add a first line to the file: \"// LLM: Section: Begin File\". The second section of the file will be called \"Begin Body\". It will begin immediately following the \";\" ending the module interface declaration. The final (third) section will be called \"End Body\". It will begin immediately preceding the \"endmodule\" line. Add the appropriate header comment lines to identify these sections. For example, your response might look like this:
-+
-+```verilog
-+// LLM: Section: Begin File
-+module my_module (
-+    input logic a,
-+    output logic b
-+);
-+// LLM: Section: Begin Body
-+    assign a = b;
-+// LLM: Section: End Body
-+endmodule
-+```
-+
-+Note, the \"Begin File\" and \"End Body\" sections might include other things like \"`define\" statements, etc."
-}, {
 "desc": "Analyze tabs",
 "must_produce": ["tab_width"],
 "prompt": "Try to determine the assumed width of tabs in the given Verilog code. Make no changes to the Verilog, but report the determined tab width in a field called \"tab_width\" in the response. If the width is not clear, provide a \"tab_width\" value of \"unknown\". If there are no tabs in the code, provide a \"tab_width\" value of \"none\"."
@@ -622,7 +602,7 @@
 },{
 "desc": "Common subexpressions",
 "prompt":
-"Scan the code for common subexpressions. Where doing so would simplify the code, extract such a subexpressions into a separate `assign` statements. For example:
+"Scan the code for common subexpressions (subexpressions that are repeated multiple times in different expressions). Only if and where doing so would simplify the code, use an intermediate signal for this subexpression. Declare the intermediate signal with the correct bit width. Extract the subexpression into a separate `assign` statement, and replace all occurances with this new signal. For example:
 +
 +```verilog
 +assign foo = (valid && type == 2'b00) ? a : c;
@@ -632,12 +612,13 @@
 +could be transformed to:
 +
 +```verilog
++logic valid_type0;
 +assign valid_type0 = valid && type == 2'b00;
 +assign foo = valid_type0 ? a : c;
 +assign bar = valid_type0 ? b : (big ? d : e);
 +```
 +
-+As always, if the needed changes are significant, make a few changes, and leave the rest as is, indicating that changes are incomplete and outlining a plan for the remaining changes of this refactoring step."
++It might be best to process no more than one subexpression (if any) and leave the rest for another agent, indicating that changes are incomplete and outlining a plan for the remaining changes of this refactoring step."
 },{
 "desc": "Named block syntax",
 "background":

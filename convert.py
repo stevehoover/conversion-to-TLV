@@ -17,7 +17,11 @@
 #  - tmp/fev.sby & tmp/fev.eqy: The FEV script for this conversion job.
 #  - tmp/m5/*: Temporary files used for M5 preprocessing of a prompt.
 #  - tmp/pre_llm.v: The Verilog file sent to the LLM API.
-#  - tmp/llm.v: The LLM output Verilog file.
+#  - tmp/llm_resp.v: The Verilog response field from the LLM (if any).
+#  - tmp/diff.v: The diff of pre_llm.v and llm_resp.v (if response contained Verilog field).
+#  - tmp/diff_mod.v: A modification of diff.v to ignore "..." diffs (if response contained Verilog field).
+#  - tmp/llm_upd.v: The updated Verilog file after applying diff_mod.v (if response contained Verilog field).
+#  - tmp/llm.v: The updated (or not) Verilog (llm_upd.v or pre_llm.v).
 #  - llm_response.txt: The LLM response file.
 #
 # A history of all refactoring steps is stored in history/#, where "#" is the "refactoring step", starting with history/1.
@@ -51,7 +55,6 @@
 #     "fev": "passed"|"failed" (or non-existent if not run),
 #     "incomplete": true|false A sticky field (held for each checkpoint of the refactoring step) assigned or updated by each LLM run,
 #                              indicating whether the LLM response was incomplete.
-#     "modified": true|false (or non-existent if not run) Indicates whether the code from the LLM was actually modified.
 #     "accepted": true|non-existent Exists as true for the final modification of a refactoring step that was accepted.
 #   }
 #
@@ -165,6 +168,7 @@ class LLM_API(ABC):
 # This class isolates the format of LLM messages from the functionality and enables message formats to be used
 # that are optimized for the LLM.
 class MessageBundler:
+  # TODO: Unused. Was this being added, or never needed?
   # Convert the given object to text.
   # The object format is:
   #   {
@@ -176,13 +180,13 @@ class MessageBundler:
   def obj_to_content(self, json):
     pass
 
+  # TODO: Unused. Was this being added, or never used?
   # Convert the given LLM response text into an object of the form:
   #   {
   #     "overview": "This is an overview.",
-  #     "verilog": "This is the Verilog code, or complete sections of it.",
+  #     "verilog": "This is the Verilog code.",
   #     "notes": "These are notes.",
   #     "issues": "These are issues.",
-  #     "modified": true,
   #     "incomplete": true,
   #     "plan": "Since changes are incomplete, this is the plan for completing the step."
   #   }
@@ -300,6 +304,7 @@ class PseudoMarkdownMessageBundler(MessageBundler):
       separator = "\n\n"
     return content
 
+  """
   # TODO: Maybe this notion of sections should be replaced with an option for responses to
   # use "\n...\n" to omit portions of code. Yes... do this!
   #
@@ -341,7 +346,8 @@ class PseudoMarkdownMessageBundler(MessageBundler):
           print("Warning: Verilog of request has an omitted section.")
     
     return [ret_code, ret_omitted]
-
+  """
+    
   # Convert the given LLM API response string from the pseudo-Markdown format requested into an object, as described
   # in default_system_message.txt.
   # response: The response string from the LLM API.
@@ -382,10 +388,11 @@ class PseudoMarkdownMessageBundler(MessageBundler):
           if body != "" and body[-1] != "\n":
             body += "\n"
           
+          """
           # Split the request and response Verilog into sections.
           [response_sections, response_omitted] = self.split_sections(body, True)
           [orig_sections, orig_omitted] = self.split_sections(verilog, False)
-
+          
           # Reconstruct the full response Verilog, adding omitted sections from the original Verilog.
           body = ""
           for name, code in response_sections.items():
@@ -397,6 +404,19 @@ class PseudoMarkdownMessageBundler(MessageBundler):
               body += orig_sections[name]
             else:
               body += code
+          """
+          with open("tmp/llm_resp.v", "w") as f:
+            f.write(body)
+          if body == "...\n":
+            # Won't use intermediate files. Delete them to avoid confusion.
+            os.remove("tmp/diff.txt", "tmp/diff_mod.txt", "tmp/llm_upd.v")
+            body = verilog
+          else:
+            if ChangeMerger.merge_changes("tmp/pre_llm.v", "tmp/llm_resp.v", "tmp/diff.txt", "tmp/diff_mod.txt", "tmp/llm_upd.v"):
+              with open("tmp/llm_upd.v") as f:
+                body = f.read()
+            else:
+              body = False
 
         # Capture the previous field.
         # Boolean responses.
@@ -436,6 +456,92 @@ class PseudoMarkdownMessageBundler(MessageBundler):
 
 
 
+# A class for incorporating changes from the LLM into the Verilog file.
+#
+# Request to the LLM include Verilog file contents.
+# Responses from the LLM include updated Verilog. This Verilog need not be provided in its entirety. "..." lines
+# can be used by the LLM to represent unchanged portions of the file.
+# We rely of diff and patch to reconstruct the full updated Verilog file as follows:
+#   1) We use diff to identify the changes, including the replacement of sections of code with "..." lines.
+#   2) We modify the diff file to remove the "..." substitutions.
+#   3) We apply the modified diff file to the original Verilog file to produce the updated Verilog file.
+class ChangeMerger:
+  hunk_header_re = re.compile(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@')
+  
+  # Helper for adjust_diff to write a hunk to the output file after adjusting its header.
+  def write_hunk(hunk, outfile, orig_offset, mod_offset):
+    if not any(line.startswith(('+', '-')) for line in hunk[1:]):  # Check if hunk has changes
+      return  # Skip empty hunks
+
+    # Adjust the hunk header
+    match = ChangeMerger.hunk_header_re.match(hunk[0])
+    if match:
+      orig_start, orig_len, mod_start, mod_len = map(int, match.groups())
+      # Adjust starting line numbers and lengths
+      orig_start -= orig_offset
+      mod_start -= mod_offset
+      orig_len = sum(1 for line in hunk[1:] if line.startswith(('-', ' ')))
+      mod_len = sum(1 for line in hunk[1:] if line.startswith(('+', ' ')))
+      hunk[0] = f"@@ -{orig_start},{orig_len} +{mod_start},{mod_len} @@\n"
+
+    outfile.writelines(hunk)
+  
+
+  # Create a modified diff file, removing "..." changes.
+  # Line numbers in the diff file must be adjusted to reflect the changes.
+  # Parameters:
+  #   input_diff: The original diff file path.
+  #   output_diff: The modified diff file path.
+  def adjust_diff(input_diff, output_diff):
+    current_hunk = []  # To accumulate lines for the current hunk
+    skip_hunk = False  # To track whether to skip the current hunk
+    orig_line_offset = 0  # Tracks offset adjustments for the original file
+    mod_line_offset = 0  # Tracks offset adjustments for the modified file
+
+
+    with open(input_diff, 'r') as infile, open(output_diff, 'w') as outfile:
+      for line in infile:
+        if ChangeMerger.hunk_header_re.match(line):
+          # Handle the previous hunk
+          if not skip_hunk:
+            ChangeMerger.write_hunk(current_hunk, outfile, orig_line_offset, mod_line_offset)
+          current_hunk = [line]  # Start a new hunk
+          skip_hunk = False  # Reset skip flag
+        elif line.startswith('+...'):
+          skip_hunk = True  # Mark this hunk for skipping
+        elif not skip_hunk:
+          current_hunk.append(line)  # Accumulate lines for the current hunk
+        elif line.startswith('-') and skip_hunk:
+          # Update offsets when skipping removed lines
+          orig_line_offset += 1
+        elif line.startswith('+') and skip_hunk:
+          # Update offsets when skipping added lines
+          mod_line_offset += 1
+
+      # Handle the final hunk
+      if not skip_hunk:
+        ChangeMerger.write_hunk(current_hunk, outfile, orig_line_offset, mod_line_offset)
+
+  # Merge changes.
+  # Parameters:
+  #   orig_file: The original file path.
+  #   modified_file: The modified file path (including "..." lines).
+  #   diff_file: The path for the diff file.
+  #   modified_diff_file: The path for the modified diff file.
+  #   output_file: The output file path.
+  # Returns:
+  #   Success
+  def merge_changes(orig_file, modified_file, diff_file, modified_diff_file, output_file):
+    # Create a diff file between the original and modified files.
+    status = os.system(f"diff -u {orig_file} {modified_file} > {diff_file}")
+    # Adjust the diff file to remove "..." substitutions.
+    ChangeMerger.adjust_diff(diff_file, modified_diff_file)
+    # Apply the modified diff file to the original file to produce the output file.
+    rslt = run_command(['patch', '-o', output_file, orig_file, modified_diff_file])
+    return rslt.returncode == 0
+
+
+
 ###############
 #             #
 #  Functions  #
@@ -443,9 +549,27 @@ class PseudoMarkdownMessageBundler(MessageBundler):
 ###############
 
 
+###########
+# Generic #
+###########
+
+
+# Run a system command, reporting the error if it fails and produces stderr output.
+# Return the same structure as subprocess.run.
+def run_command(cmd):
+  rslt = subprocess.run(cmd, capture_output=True, text=True)
+  if (rslt.returncode != 0) and rslt.stderr:
+    print("Error: Command failed.")
+    print("       '" + " ".join(cmd) + "' failed as follows:")
+    print(rslt.stderr)
+  return rslt
+
+
+
 ##################
 # Usage and Exit #
 ##################
+
 
 # Report a usage message.
 def usage():
@@ -581,14 +705,15 @@ def read_prompt_id(file):
     id = prompt_id["id"]
     if prompts[id]["desc"] != desc:
       # Prompts have changed. See if we can identify the proper ID by looking up the description in prompts_by_desc.
+      prompt_id_str = "{" + str(prompt_id["id"]) + ", " + prompt_id["desc"] + "}"
       if desc in prompts_by_desc:
-        id = prompts_by_desc[desc]["id"]
+        id = prompts_by_desc[desc]["index"]
         # Report the correction.
-        print("Warning: Prompts have been changed. Corrected ID " + prompt_id + " to " + id + " for current prompt: \"" + desc + "\".")
+        print("Warning: Prompts have been changed. Corrected ID " + prompt_id_str + " to " + str(id) + " for current prompt: \"" + desc + "\".")
       else:
         print("\nError: The description in \"prompt_id.txt\" does not match any prompt description in prompts.json.")
         print("       The description in \"prompt_id.txt\" is: \"" + desc + "\".")
-        print("       The descriptions for ID " + prompt_id + " in prompts.json is:" + prompts[prompt_id]["desc"] + "\".")
+        print("       The descriptions for ID " + prompt_id_str + " in prompts.json is:" + prompts[prompt_id]["desc"] + "\".")
         # Continue?
         ch = prompt_user("Continue with the current prompt ID?", {"y", "n"}, "n")
         if ch == "n":
@@ -1010,16 +1135,17 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
     #  print(response_json)
     #  sys.exit(1)
 
-    # Response should include "modified", but if it is missing and "verilog" is present, assume "modified" is True.
-    if "modified" not in response_obj and "verilog" in response_obj:
-      response_obj["modified"] = True
-      print("Warning: API response is missing \"modified\" field. Assuming \"modified\" is True.")
-
-    # Check that this prompt produces are required fields. If it does not, we force rejection.
-    if (response_obj.get("modified", False) and "verilog" not in response_obj) or "modified" not in response_obj:
-      print("Error: API response fields are incomplete or inconsistent.")
+    # "verilog" field is required.
+    if "verilog" not in response_obj:
+      print("\nError: API response is missing \"verilog\" field.")
       print("Rejecting response.")
+      response_obj["verilog"] = "...\n"
       reject = True
+
+    # Are there any modifications to the Verilog?
+    modified = response_obj["verilog"] != "...\n"
+
+    # Check that this prompt produces all requested fields. If it does not, we force rejection.
     for field in prompts[prompt_id].get("must_produce", []):
       if field not in response_obj:
         print("Error: API response is missing required field: " + field)
@@ -1033,7 +1159,7 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       print("")
       print("The following response was received from the API, to replace the Verilog file:")
       print("")
-      # Reformat the JSON into multiple lines and extract the verilog for cleaner printing.
+      # Reformat the JSON into multiple lines and extract the verilog for cleaner printing, then restore it.
       code = response_obj.get("verilog")
       if code:
         response_obj["verilog"] = "See meld."
@@ -1051,18 +1177,7 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       with open(working_verilog_file_name) as file:
         pre_llm_code = file.read()
 
-      # Correct "modified" if necessary.
-      modified = response_obj["modified"]  # As reported by the LLM, and updated to reflect reality.
-      if modified != ((code != None) and (code != pre_llm_code)):
-        if modified:
-          print("Note: API response indicates code was modified, but the code is unchanged.")
-          print("      No big deal. Correcting. (Will checkpoint anyway.)")
-          modified = False
-        else:
-          print("Note: API response includes code changes but reports \"modified\": false. Correcting.")
-          modified = True
-      
-      # Write tmp/llm.v and working Verilog file with LLM's Verilog output.
+      # Write tmp/llm.v with updated (or not) Verilog.
       code = response_obj["verilog"] if modified else pre_llm_code
       with open("tmp/llm.v", "w") as file:
         file.write(code)
@@ -1333,8 +1448,8 @@ def reset_prompt(type, prev_prompt_id):
 
 
 # Response fields.
-response_fields = {"overview", "verilog", "notes", "issues", "modified", "incomplete", "plan"}    # ("incomplete" is sticky between LLM runs, so it has special treatment.)
-status_fields = {"by", "compile", "fev", "incomplete", "modified", "accepted", "plan"}
+response_fields = {"overview", "verilog", "notes", "issues", "incomplete", "plan"}    # ("incomplete" is sticky between LLM runs, so it has special treatment.)
+status_fields = {"by", "compile", "fev", "modified", "incomplete", "accepted", "plan"}
 llm_status_fields = {"incomplete", "plan"}   # These are empty for a refactoring step and updated by LLM runs.
 
 llm_api = OpenAI_API()
@@ -1370,9 +1485,10 @@ with open(repo_dir + "/prompts.json") as file:
   raw_contents = file.read()
 json_str = from_extended_json(raw_contents)
 prompts = json.loads(json_str)
-# Also provide a dictionary of prompts indexed by desc.
+# Add an index field to prompts. Also provide a dictionary of prompts indexed by desc.
 prompts_by_desc = {}
-for prompt in prompts:
+for id, prompt in enumerate(prompts):
+  prompt["index"] = id
   desc = prompt["desc"]
   if desc in prompts_by_desc:
     print("Error: Duplicate prompt description: " + desc)
