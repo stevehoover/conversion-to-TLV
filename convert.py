@@ -11,8 +11,9 @@
 #  - <module_name>.v: The current WIP refactored/modified Verilog module, against which FEV will be run.
 #  - prompt_id.txt: A file containing, e.g. {"id": 5, "desc": "Update clocks"}, the ID and desc field of the current prompt.
 #                  (Formerly, this was just an ID number.) (Note, the actual prompt may have been modified manually.)
-#  - messages.json: The messages to be sent to the LLM API (as in the ChatGPT API).
-#  - chkpt.v: A link to the last checkpointed Verilog file.
+#  - messages.<api>.json: The messages to be sent to the LLM API (as in the ChatGPT API).
+#  - current/feved.v: A link to the most-recent successfully FEVed Verilog file.
+#  - current/chkpt.v: A link to the last checkpointed Verilog file.
 # Additionally, these files may be created and captured in the process:
 #  - tmp/fev.sby & tmp/fev.eqy: The FEV script for this conversion job.
 #  - tmp/m5/*: Temporary files used for M5 preprocessing of a prompt.
@@ -29,7 +30,7 @@
 # Contents includes:
 #   - history/#/prompt_id.txt: As above
 #   - history/#/<module_name>.v: The refactored file at each step.
-#   - history/#/messages.json: The messages sent to the LLM API for each step.
+#   - history/#/messages.<api>.json: The messages sent to the LLM API for each step.
 # Although Git naturally captures a history, it may be desirable to capture this folder in Git, simply for convenience, since it may be desirable to
 # easily examine file differences or to rework the conversion steps after the fact.
 #
@@ -39,7 +40,7 @@
 # A modification is stored in history/#/mod_#/ (where # are sequential numbers).
 # Contents include:
 #   - history/#/mod_#/<module_name>.v: The modified Verilog file.
-#   - history/#/mod_#/messages.json: The messages sent to the LLM API (for LLM modifications only).
+#   - history/#/mod_#/messages.<api>.json: The messages sent to the LLM API (for LLM modifications only).
 #   - history/#/mod_#/status.json: Metadata about the modification, as below, written after testing.
 #
 # history/#/mod_0 are checkpoints of the initial code for each refactoring step. Thus, history/1/mod_0/<module_name>.v is the initial
@@ -48,9 +49,10 @@
 # history/#/mod_# can also be a symlink to a prior history/#/mod_#, recording a code reversion. A reversion will not reference
 # another reversion.
 #
-# The status.json file reflects the status of the modification, updated as fields become known:
+# The status.json file reflects the status of the modification, including the following (and others that are sticky):
 #   {
 #     "by": "human"|"llm",
+#     "api": ... if "by" is "llm",
 #     "compile": "passed"|"failed" (or non-existent if not compiled),
 #     "fev": "passed"|"failed" (or non-existent if not run),
 #     "incomplete": true|false A sticky field (held for each checkpoint of the refactoring step) assigned or updated by each LLM run,
@@ -65,6 +67,7 @@
 #   - backgroud: (opt) background information that may be relevant to this refactoring step
 #   - prompt: prompt string, preprocess using M5 (if necessary), passing M5 variables from sticky fields
 #   - must_produce: (opt) an array of strings representing sticky fields that the LLM must produce in its response
+#   TODO: Eliminate "may_produce" (since JSON schema has only required fields).
 #   - may_produce: (opt) an array of strings representing sticky fields that the LLM may produce in its response.
 #   - if: (opt) an object with fields that represent values of sticky fields; if given and any match, this prompt will be used ("" matches undefined)
 #         Each field may have an array value rather than a string, in which case any array value may match.
@@ -72,6 +75,7 @@
 #             Each field may have an array value rather than a string, in which case any array value may match.
 #   - needs: (opt) an array of strings representing sticky fields whose values are to be reported in the prompt
 #   - consumes: (opt) an array of strings representing sticky fields that are consumed by this prompt
+#   TODO: Is "consumes" implemented? Do not consume if "incomplete". Consume even if skipped.
 #
 # When launched, this script first determines the current state of the conversions process. This state is:
 #   - The current candidate:
@@ -84,7 +88,7 @@
 #
 # This is a command-line utility which prompts the user for input. Edits to <module_name>.v can be made manually.
 # It is suggested to have <module_name>.v open in an editor and in a diff utility, such as meld (prompted and launched by this script), while running this script.
-# Additionally, messages.json (and the "plan" field of status.json) may be modified manually before running the LLM. Users
+# Additionally, messages.<api>.json (and the "plan" field of status.json) may be modified manually before running the LLM. Users
 # must be careful to save files before responding to prompts.
 #
 # To begin each step, the user is given instructions and prompted for input.
@@ -104,6 +108,7 @@ import json
 import re
 import shutil
 import stat
+import copy
 
 # Confirm that we're using Python 3.7 or later (as we rely on dictionaries to be ordered).
 if sys.version_info < (3, 7):
@@ -195,7 +200,7 @@ class MessageBundler:
     pass
 
   # Add Verilog to last message to be sent to the API.
-  # messages: The messages.json object in OpenAI format.
+  # messages: The messages.<api>.json object in OpenAI format.
   # verilog: The current Verilog file contents.
   @abstractmethod
   def add_verilog(self, messages, verilog):
@@ -241,36 +246,85 @@ class OpenAI_API(LLM_API):
       fail()
 
   # Set up the initial messages object for the current refactoring step based on the given system message and message parameter.
-  def initPrompt(self, system, message):
+  def initPrompt(self, api, system, message):   
     return [
-      {"role": "system", "content": system},
+      {"role": apis[api]['system_role'], "content": system},
       {"role": "user", "content": message}
     ]
 
 
-  # Run the LLM API on the messages.json file appended with the verilog code, returning the response string from the LLM.
+  # Run the LLM API on the messages.<api>.json file appended with the verilog code, returning the response string from the LLM.
   def run(self, messages, verilog, model=None):
     if model == None:
       model = self.model
     self.validateModel(model)
     
     # Add verilog to the last message.
-    message_bundler.add_verilog(messages, verilog)
+    get_message_bundler_for_model(model).add_verilog(messages, verilog)
+    api_properties = apis[models[model]["api"]]
 
     # Call the API.
+    # TODO: Consider the new "prediction" parameter (https://platform.openai.com/docs/api-reference/chat/create#chat-create-prediction).
     print("\nCalling " + model + "...")
-    # TODO: Not supported in ChatGPT-3.5: response_format = {"type": "json_object"}
-    # TODO: o1-preview model reports: {'message': "Unsupported value: 'messages[0].role' does not support 'system' with this model.", 'type': 'invalid_request_error', 'param': 'messages[0].role', 'code': 'unsupported_value'"}
-    api_response = self.client.chat.completions.create(model=model, messages=messages, max_tokens=3000, temperature=0.0)
+    desired_max = 8000
+    max_completion_tokens = api_properties.get('max_output_tokens')
+    if (max_completion_tokens is not None) and max_completion_tokens > desired_max:
+      max_completion_tokens = desired_max
+    #-api_response = self.client.chat.completions.create(model=model, messages=messages, max_completion_tokens=4096)
+    
+    my_json_schema = copy.deepcopy(json_schema)
+    # Add extra_fields to my_json_schema.
+    if "must_produce" in prompts[prompt_id]:
+      # Add extra_fields to the schema.
+      my_json_schema["schema"]["properties"]["extra_fields"] = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+        "required": []
+      }
+      my_json_schema["schema"]["required"].append("extra_fields")
+      # Add the extra fields to the schema.
+      for field in prompts[prompt_id]["must_produce"]:
+        my_json_schema["schema"]["properties"]["extra_fields"]["properties"][field] = \
+          {"type": "string"}   # (Prompt format does not provide a description.)
+        my_json_schema["schema"]["properties"]["extra_fields"]["required"].append(field)
+
+    params = {
+        "model": model,
+        "messages": messages,
+        "max_completion_tokens": max_completion_tokens,
+        "response_format": {
+          "type": "text"
+        }
+    }
+    if api_properties["format"] == "json":
+      if api_properties["structured"]:
+        # Use structured JSON.
+        params["response_format"] = {
+          "type": "json_schema",
+          "json_schema": copy.deepcopy(my_json_schema)
+        }
+      else:
+        # Structured Output is not supported.
+        params["response_format"] = {
+          "type": "json_object"
+        }
+    api_response = self.client.chat.completions.create(**params)
+
     print("Response received from " + model)
 
     # Parse the response.
     try:
-      response_str = api_response.choices[0].message.content
-      finish_reason = api_response.choices[0].finish_reason
-      completion_tokens = api_response.usage.completion_tokens
-      print("API response finish reason: " + finish_reason)
-      print("API response completion tokens: " + str(completion_tokens))
+      if api_response.choices[0].message.refusal:
+        print("Error: LLM refused to provide a complete response with the following message:")
+        print("       " + api_response.choices[0].message.content + "\n")
+        response_str = ""
+      else:
+        response_str = api_response.choices[0].message.content
+        finish_reason = api_response.choices[0].finish_reason
+        completion_tokens = api_response.usage.completion_tokens
+        print("API response finish reason: " + finish_reason)
+        print("API response completion tokens: " + str(completion_tokens))
     except Exception as e:
       print("Error: API response is invalid.")
       print(str(e))
@@ -298,9 +352,7 @@ class PseudoMarkdownMessageBundler(MessageBundler):
     content = ""
     separator = ""
     for key in obj:
-      # Convert (single-word) key to title case.
-      name = key[0].upper() + key[1:]
-      content += separator + "## " + name + "\n\n" + obj[key]
+      content += separator + "## " + key + "\n\n" + obj[key]
       separator = "\n\n"
     return content
 
@@ -355,6 +407,15 @@ class PseudoMarkdownMessageBundler(MessageBundler):
   def response_to_obj(self, response, verilog):
     # Parse the response, line by line, looking for second-level Markdown header lines.
     lines = response.split("\n")
+
+    # No trailing newline.
+    if lines[-1] == "":
+      del lines[-1]
+
+    # o1-mini likes to put the entire response in block quotes or "-------". Fine. Strip them.
+    if len(lines) > 2 and lines[0] == lines[-1] and re.match(r"^(```|---+)$", lines[0]):
+      lines = lines[1:-1]
+
     l = 0
     fields = {}
     field = None
@@ -384,10 +445,6 @@ class PseudoMarkdownMessageBundler(MessageBundler):
           if n != 0:
             print("Warning: The \"verilog\" field of the response was contained in block quotes. They were stripped.")
           
-          # Make sure the Verilog code ends with a newline (because we pattern match lines ending in newline).
-          if body != "" and body[-1] != "\n":
-            body += "\n"
-          
           """
           # Split the request and response Verilog into sections.
           [response_sections, response_omitted] = self.split_sections(body, True)
@@ -405,20 +462,8 @@ class PseudoMarkdownMessageBundler(MessageBundler):
             else:
               body += code
           """
-          with open("tmp/llm_resp.v", "w") as f:
-            f.write(body)
-          if body == "...\n":
-            # Won't use intermediate files. Delete them to avoid confusion.
-            os.remove("tmp/diff.txt", "tmp/diff_mod.txt", "tmp/llm_upd.v")
-            body = verilog
-          else:
-            if ChangeMerger.merge_changes("tmp/pre_llm.v", "tmp/llm_resp.v", "tmp/diff.txt", "tmp/diff_mod.txt", "tmp/llm_upd.v"):
-              with open("tmp/llm_upd.v") as f:
-                body = f.read()
-            else:
-              body = False
+          body = ChangeMerger.merge_verilog_changes(body, verilog)
 
-        # Capture the previous field.
         # Boolean responses.
         if body == "true" or body == "false":
           body = body == "true"
@@ -429,31 +474,69 @@ class PseudoMarkdownMessageBundler(MessageBundler):
         # Parse the header line with a regular expression.
         field = re.match(r"## +(\w+)", lines[l]).group(1)
 
-        # The field name should be a lower-case words with underscore delimitation.
-        if not re.match(r"[a-z_]*", field):
-          print("Warning: The following malformed field name was found in the response:")
-          print(field)
-
-        # Convert field name to lower case.
-        field = field.lower()
-          
-        # Check for legal field name.
-        if field not in response_fields | set(prompts[prompt_id].get("must_produce", [])) | set(prompts[prompt_id].get("may_produce", [])):
-          print("Warning: The following non-standard field was found in the response:")
-          print(field)
+        field = self.validate_field_name(field)
 
         # Done with this header line.
         l += 1
     
     return fields
+  
+
+  # Validate/correct field name.
+  # field: The field name to validate.
+  # return: The corrected field name.
+  # TODO: Checking is automatic with Open API Structured Output.
+  def validate_field_name(self, field):
+    # The field name should be a lower-case words with underscore delimitation.
+    if not re.match(r"[a-z_]*", field):
+      print("Warning: The following malformed field name was found in the response:")
+      print(field)
+
+    # Convert field name to lower case.
+    field = field.lower()
+      
+    # Check for legal field name.
+    if field not in response_fields | set(prompts[prompt_id].get("must_produce", [])) | set(prompts[prompt_id].get("may_produce", [])):
+      print("Warning: The following non-standard field was found in the response:")
+      print(field)
+    
+    return field
+
 
   # Add Verilog to last message to be sent to the API.
-  # messages: The messages.json object in OpenAI format.
+  # messages: The messages.<api>.json object in OpenAI format.
   # verilog: The current Verilog file contents.
   def add_verilog(self, messages, verilog):
     # Add verilog to the last message.
     messages[-1]["content"] += "\n\n## verilog\n\n" + verilog
 
+
+# A message bundler for Open AI APIs that support JSON ("Structured Outputs").
+# Requests use the same format. Only responses are JSON.
+class JsonMessageBundler(PseudoMarkdownMessageBundler):
+
+  # Convert the given LLM API response to JSON.
+  # And, in this case, it already is JSON.
+  # Parameters:
+  #   response: The response string from the LLM API.
+  #   verilog: The original Verilog code, needed to reconstruct sections that are omitted in the response.
+  def response_to_obj(self, response, verilog):
+    try:
+      response = json.loads(response)
+    except Exception as e:
+      print("Error: API response is not valid JSON.")
+      print(str(e))
+      fail()
+
+    # Process the "verilog" field (expanding "..." lines).
+    if (response.get("verilog") is not None):
+      response["verilog"] = ChangeMerger.merge_verilog_changes(response["verilog"], verilog)
+    
+    # Validate field names.
+    for field in response:
+      self.validate_field_name(field)
+    
+    return response
 
 
 # A class for incorporating changes from the LLM into the Verilog file.
@@ -468,61 +551,119 @@ class PseudoMarkdownMessageBundler(MessageBundler):
 class ChangeMerger:
   hunk_header_re = re.compile(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@')
   
-  # Helper for adjust_diff to write a hunk to the output file after adjusting its header.
-  def write_hunk(hunk, outfile, orig_offset, mod_offset):
-    if not any(line.startswith(('+', '-')) for line in hunk[1:]):  # Check if hunk has changes
-      return  # Skip empty hunks
+  # Helper for adjust_diff (below) to write a hunk to the output file after adjusting its header.
+  def write_hunk(hunk, outfile, orig_offset):
+    # This is now handled by skip_hunk.
+    #if not any(line.startswith(('+', '-')) for line in hunk[1:]):  # Check if hunk has changes
+    #  return  # Skip empty hunks
 
     # Adjust the hunk header
     match = ChangeMerger.hunk_header_re.match(hunk[0])
     if match:
-      orig_start, orig_len, mod_start, mod_len = map(int, match.groups())
+      orig_start, orig_orig_len, mod_start, orig_mod_len = map(int, match.groups())
       # Adjust starting line numbers and lengths
-      orig_start -= orig_offset
-      mod_start -= mod_offset
-      orig_len = sum(1 for line in hunk[1:] if line.startswith(('-', ' ')))
-      mod_len = sum(1 for line in hunk[1:] if line.startswith(('+', ' ')))
-      hunk[0] = f"@@ -{orig_start},{orig_len} +{mod_start},{mod_len} @@\n"
-
+      orig_start += orig_offset
+      #mod_start += mod_offset
+      new_orig_len = sum(1 for line in hunk[1:] if line.startswith(('-', ' ')))
+      new_mod_len = sum(1 for line in hunk[1:] if line.startswith(('+', ' ')))
+      # mod_len should not change
+      if new_mod_len != orig_mod_len:
+        print("Bug: Hunk header length mismatch.")
+        fail()
+      hunk[0] = f"@@ -{orig_start},{new_orig_len} +{mod_start},{new_mod_len} @@\n"
     outfile.writelines(hunk)
+    return new_orig_len - orig_orig_len
   
 
-  # Create a modified diff file, removing "..." changes.
-  # Line numbers in the diff file must be adjusted to reflect the changes.
+  # Create a modified diff file, removing "..." deltas.
+  # Note that the diff is created in reverse, so that the "..." lines will come first,
+  # for easier processing.
+  #
+  # Deltas are modified as in the following example:
+  #  -...
+  #  +// omitted
+  #  +// code
+  #  +// block
+  # becomes:
+  #   // omitted
+  #   // code
+  #   // block
+  #
+  # Hunk header lines are formatted as:
+  #  @@ -orig_start,orig_len +mod_start,mod_len @@
+  # The modifications reflect a change in the original (LLM response) file that affect
+  # headers as follows:
+  #   - Orig_len is recalculated for each hunk.
+  #   - Subsequent hunks are adjusted as follows:
+  #  3-1 is added to this and all subsequent hunk header's original (LLM response) line
+  #  number and length.
+  #
   # Parameters:
   #   input_diff: The original diff file path.
   #   output_diff: The modified diff file path.
+  # Returns:
+  #   Success (True) or failure (False).
   def adjust_diff(input_diff, output_diff):
-    current_hunk = []  # To accumulate lines for the current hunk
-    skip_hunk = False  # To track whether to skip the current hunk
-    orig_line_offset = 0  # Tracks offset adjustments for the original file
-    mod_line_offset = 0  # Tracks offset adjustments for the modified file
-
+    success = True
+    hunk = []  # Lines of the current hunk before writing it out with adjusted header
+    skip_hunk = True  # Skip hunks with no deltas
+    llm_line_offset = 0  # Tracks offset adjustments for the original (LLM response) file
+    #-pre_llm_line_offset = 0  # Tracks offset adjustments for the modified (pre-LLM) file
 
     with open(input_diff, 'r') as infile, open(output_diff, 'w') as outfile:
+      line_type = "file_header"
       for line in infile:
         if ChangeMerger.hunk_header_re.match(line):
           # Handle the previous hunk
           if not skip_hunk:
-            ChangeMerger.write_hunk(current_hunk, outfile, orig_line_offset, mod_line_offset)
-          current_hunk = [line]  # Start a new hunk
-          skip_hunk = False  # Reset skip flag
-        elif line.startswith('+...'):
-          skip_hunk = True  # Mark this hunk for skipping
-        elif not skip_hunk:
-          current_hunk.append(line)  # Accumulate lines for the current hunk
-        elif line.startswith('-') and skip_hunk:
+            llm_line_offset += ChangeMerger.write_hunk(hunk, outfile, llm_line_offset)
+          hunk = []  # Start a new hunk
+          skip_hunk = True  # Reset skip flag
+          line_type = "keep"
+        elif line_type == "file_header":
+          # Haven't reached the first hunk yet.
+          outfile.write(line)
+          # line_type remains "file_header".
+        #elif line.startswith('-...'):
+        elif re.match(r'^-\s*\.\.\.', line):  # LLMs like to indent, so allow whitespace.
+          if line_type != "keep":
+            print("Error: Failed to reconstruct '...' line from LLM Verilog response.")
+            print("       (The LLM didn't provide enough context before omitted text.)")
+            success = False
+            break
           # Update offsets when skipping removed lines
-          orig_line_offset += 1
-        elif line.startswith('+') and skip_hunk:
-          # Update offsets when skipping added lines
-          mod_line_offset += 1
+          #llm_line_offset -= 1
+          line_type = "..."
+        elif line.startswith('+'):
+          if line_type == "..." or line_type == "omitted":
+            # Change line from "+" prefix to " " prefix.
+            line = line.replace('+', ' ', 1)
+            # This line was omitted from original (LLM response) and we're adding it back.
+            #llm_line_offset += 1
+            line_type = "omitted"
+          else:
+            skip_hunk = False
+            line_type = "+"
+        elif line.startswith('-'):
+          if line_type == "...":
+            print("Error: Failed to reconstruct '...' line from LLM Verilog response.")
+            print("       (The LLM didn't provide enough context after omitted text.)")
+            success = False
+            break
+          else:
+            skip_hunk = False
+            line_type = "-"
+        else:
+          # No delta (context) line.
+          line_type = "keep"
+        if line_type != "..." and line_type != "file_header":
+          hunk.append(line)
 
       # Handle the final hunk
       if not skip_hunk:
-        ChangeMerger.write_hunk(current_hunk, outfile, orig_line_offset, mod_line_offset)
+        ChangeMerger.write_hunk(hunk, outfile, llm_line_offset)
 
-  # Merge changes.
+    return success
   # Parameters:
   #   orig_file: The original file path.
   #   modified_file: The modified file path (including "..." lines).
@@ -533,12 +674,49 @@ class ChangeMerger:
   #   Success
   def merge_changes(orig_file, modified_file, diff_file, modified_diff_file, output_file):
     # Create a diff file between the original and modified files.
-    status = os.system(f"diff -u {orig_file} {modified_file} > {diff_file}")
-    # Adjust the diff file to remove "..." substitutions.
-    ChangeMerger.adjust_diff(diff_file, modified_diff_file)
-    # Apply the modified diff file to the original file to produce the output file.
-    rslt = run_command(['patch', '-o', output_file, orig_file, modified_diff_file])
-    return rslt.returncode == 0
+    status = os.system(f"diff -u {modified_file} {orig_file} > {diff_file}")
+    if status != 0:
+      # Adjust the diff file to remove "..." substitutions.
+      if ChangeMerger.adjust_diff(diff_file, modified_diff_file):
+        # Apply the modified diff file to the original file to produce the output file.
+        rslt = run_command(['patch', '-R', '-o', output_file, orig_file, modified_diff_file])
+        if rslt.returncode == 0:
+          return True
+    else:
+      # No diff.
+      shutil.copyfile(orig_file, output_file)
+    return False
+  
+  # Merge updated Verilog changes.
+  # Parameters:
+  #   body: The updated Verilog file contents with "..." lines.
+  #   verilog: The original Verilog file contents.
+  # Return:
+  #   The updated Verilog file contents, or False on error.
+  def merge_verilog_changes(body, verilog):
+    # Make sure the Verilog code ends with a newline (because we pattern match lines ending in newline).
+    if body != "" and body[-1] != "\n":
+      body += "\n"
+
+    with open("tmp/llm_resp.v", "w") as f:
+      f.write(body)
+    if body == "...\n":
+      # Won't use intermediate files. Delete them (if they exist) to avoid confusion.
+      if os.path.exists("tmp/diff.txt"):
+        os.remove("tmp/diff.txt")
+      if os.path.exists("tmp/diff_mod.txt"):
+        os.remove("tmp/diff_mod.txt")
+      if os.path.exists("tmp/llm_upd.v"):
+        os.remove("tmp/llm_upd.v")
+      body = verilog
+    else:
+      if ChangeMerger.merge_changes("tmp/pre_llm.v", "tmp/llm_resp.v", "tmp/diff.txt", "tmp/diff_mod.txt", "tmp/llm_upd.v"):
+        with open("tmp/llm_upd.v") as f:
+          body = f.read()
+      else:
+        body = False
+    return body
+
 
 
 
@@ -677,6 +855,7 @@ def get_command(options):
 def press_any_key(note=""):
   print("Press any key to continue...%s\n>" % note, end="")
   getch()
+  print("")
 
 
 
@@ -751,10 +930,10 @@ def fev_passed():
   return os.path.exists("fev/PASS") and os.system("diff " + module_name + ".v fev/src/" + module_name + ".v") == 0
 
 def update_chkpt():
-  os.system("ln -sf " + mod_path() + "/" + working_verilog_file_name + " chkpt.v")
+  os.system("ln -sf ../" + mod_path() + "/" + working_verilog_file_name + " current/chkpt.v")
 
 def update_feved():
-  os.system("ln -sf " + most_recently_feved_verilog_file() + " feved.v")
+  os.system("ln -sf ../" + most_recently_feved_verilog_file() + " current/feved.v")
 
 def readStatus(mod = None):
   # Default mod to mod_num
@@ -824,7 +1003,7 @@ def actual_mod(mod=None):
     return mod
 
 
-# Capture Verilog file in a new history/#/mod_#/, and if this was an LLM modification, capture messages.json and llm_response.txt.
+# Capture Verilog file in a new history/#/mod_#/, and if this was an LLM modification, capture messages.<api>.json and llm_response.txt.
 #  status: The status to save with the checkpoint, updated as new status.
 #  old_status: For use only for the first checkpoint of a refactoring step. This is the status from the prior refactoring step.
 #  verilog_file: The verilog file to capture (defaulted to working_verilog_file_name and checkpointed as working_verilog_file_name regardless).
@@ -833,7 +1012,7 @@ def checkpoint(status, old_status = None, verilog_file = None):
   if verilog_file is None:
     verilog_file = working_verilog_file_name
   global mod_num
-  # Carry over status from the prior checkpoint that is sticky (not in status_fields).
+  # Carry over sticky status from the prior checkpoint. (Fields not in status_fields are sticky.)
   # Also, carry over "plan" within the refactoring step excluding "llm" checkpoints.
   if mod_num >= 0:
     old_status = readStatus()
@@ -845,20 +1024,21 @@ def checkpoint(status, old_status = None, verilog_file = None):
     elif field not in status and field not in status_fields:
       status[field] = old_status[field]
   
-  # Capture the current Verilog file in new mod dir and update chkpt.v.
+  # Capture the current Verilog file in new mod dir and update current/chkpt.v.
   mod_num += 1
   mod_dir = mod_path()
   os.mkdir(mod_dir)
   os.system("cp " + verilog_file + " " + mod_dir + "/" + working_verilog_file_name)
 
-  # Capture messages.json and llm_response.txt if this was an LLM modification.
+  # Capture messages.<api>.json and llm_response.txt if this was an LLM modification.
   if status.get("by") == "llm":
-    os.system("cp messages.json llm_response.txt " + mod_dir)
+    api = status.get("api")
+    os.system("cp messages." + api + ".json llm_response.txt " + mod_dir)
   
   # Write status.json.
   writeStatus(status)
 
-  # Update chkpt.v and feved.v links to reflect this new checkpoint.
+  # Update current/chkpt.v and current/feved.v links to reflect this new checkpoint.
   update_chkpt()
   update_feved()
 
@@ -879,7 +1059,7 @@ def checkpoint_reversion(prev_mod):
     mod_num += 1
   # Create reversion symlink.
   os.symlink("mod_" + str(prev_mod), mod_path())
-  # Update chkpt.v and feved.v links to reflect this reversion.
+  # Update current/chkpt.v and current/feved.v links to reflect this reversion.
   update_chkpt()
   update_feved()
 
@@ -936,37 +1116,63 @@ def to_extended_json(json_str):
 ##################
 
 
+# Initialize messages.<api>.json.
+# This is specific to the API, but we do this when initializing the refactoring step (before we know the API)
+# to enable human edits before the API call. So we create a different messages.<api>.json file for each possible
+# API.
 def initialize_messages_json():
-  # Initialize messages.json.
-  # TODO: This is specific to the API and should be done only when the API is called? Hmmm... it is done here to enable human edits before the API call.
-  try:
-    # Read the system message from <repo>/default_system_message.txt.
-    with open(repo_dir + "/default_system_message.txt") as file:
-      system = file.read()
+  status = readStatus()
+  error = False
 
-    # Initialize messages.json.
-    with open("messages.json", "w") as message_file:
-      prompt = prompts[prompt_id]["prompt"]
-      # Search prompt string for "m5_" and use M5 if found.
-      if prompt.find("m5_") != -1:
-        prompt = processPromptWithM5(prompt, readStatus())
-      # Add "needs" fields to the prompt.
-      if "needs" in prompts[prompt_id]:
-        prompt += "\n\n" + "Note that the following attributes have been determined about the Verilog code:"
-        status = readStatus()
-        for field in prompts[prompt_id]["needs"]:
-          prompt += "\n   " + field + ": " + status.get(field, "")
-      message_obj = {}
-      # If prompt has a "background" field, add it (first) to the message.
-      if "background" in prompts[prompt_id]:
-        message_obj["background"] = prompts[prompt_id]["background"]
-      message_obj["prompt"] = prompt
-      message = message_bundler.obj_to_request(message_obj)
-      ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(system, message), indent=4))
-      message_file.write(ejson_messages)
-  except Exception as e:
-    print("Error: Failed to initialize messages.json due to: " + str(e))
+  # For every API, initialize messages.<api>.json.
+  for api in apis:
+    try:
+      status['api'] = api
+      messages_json = "messages." + api + ".json"
+
+      # Read the system message from <repo>/default_system_message.txt.
+      with open(repo_dir + "/default_system_message.txt") as file:
+        system = file.read()
+      # Process with M5.
+      system = processWithM5("system_message", api, system, status)
+
+      # Initialize messages.<api>.json.
+      with open(messages_json, "w") as message_file:
+        prompt = prompts[prompt_id]["prompt"]
+        # Search prompt string for "m5_" and use M5 if found.
+        if prompt.find("m5_") != -1:
+          prompt = processWithM5("prompt", "api", prompt, status)
+        # Add "needs" fields to the prompt.
+        if "needs" in prompts[prompt_id]:
+          prompt += "\n\nNote that the following \"extra fields\" have been determined to characterize the Verilog code:"
+          for field in prompts[prompt_id]["needs"]:
+            value = str(status.get(field, "UNKNOWN"))
+            if value == "UNKNOWN":
+              print("Error: The field \"" + field + "\" is needed by the prompt but is not in the status. Using \"UNKNOWN\".")
+            prompt += "\n   " + field + ": " + value
+        message_obj = {}
+        # If prompt has a "background" field, add it (first) to the message.
+        if "background" in prompts[prompt_id]:
+          message_obj["background"] = prompts[prompt_id]["background"]
+        message_obj["prompt"] = prompt
+        message = get_message_bundler_for_api(api).obj_to_request(message_obj)
+        ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(api, system, message), indent=4))
+        message_file.write(ejson_messages)
+    except Exception as e:
+      print("Error: Failed to initialize messages." + api + ".json due to: " + str(e))
+      error = True
+  if error:
     fail()
+
+
+# Write prompt_id.txt.
+def write_prompt_id():
+  with open("prompt_id.txt", "w") as file:
+    # Make sure there are no double quotes in the description.
+    if prompts[prompt_id]["desc"].find('"') != -1:
+      print("Error: The description of prompt " + str(prompt_id) + " contains a double quote.")
+      fail()
+    file.write('{"id": ' + str(prompt_id) + ', "desc": "' + prompts[prompt_id]["desc"] + '"}')
 
 
 # Initialize the conversion directory for the next refactoring step.
@@ -1026,13 +1232,8 @@ def init_refactoring_step():
   
   # Update state in files.
 
-  # Write prompt_id.txt.
-  with open("prompt_id.txt", "w") as file:
-    # Make sure there are no double quotes in the description.
-    if prompts[prompt_id]["desc"].find('"') != -1:
-      print("Error: The description of prompt " + str(prompt_id) + " contains a double quote.")
-      fail()
-    file.write('{"id": ' + str(prompt_id) + ', "desc": "' + prompts[prompt_id]["desc"] + '"}')
+  write_prompt_id()
+
   # Make history/# directory and populate it.
   os.mkdir("history/" + str(refactoring_step))
   os.system("cp prompt_id.txt history/" + str(refactoring_step) + "/")
@@ -1054,28 +1255,38 @@ def init_refactoring_step():
 # M5
 #
 
-# Process a prompt using M5.
-def processPromptWithM5(prompt, status):
+# Process text using M5, setting variables for sticky status fields.
+# Produces /tmp/m5/<what>.<api>.txt.m5 and /tmp/m5/<what>.<api>.txt.
+# Args:
+#   what: A string indicating what we are processing ("system_message", "prompt").
+#   body: The text to process.
+#   status: The current status object.
+def processWithM5(what, api, body, status):
   # Pass fields of status to M5 as var(status_<field>, <value>).
-  status_m5 = ""
+  status_m5 = "m5_use(m5-local)"    # TODO: Requires local environment.
+  # Set M5 variables for the api and its properties.
+  status_m5 += "m5_var(api, ['" + api + "'])"
+  for field in apis[api]:
+    status_m5 += "m5_var(api_" + field + ", ['" + str(apis[api][field]) + "'])"
   for field in status:
-    status_m5 += "var(status_" + field + ", \"" + status[field] + "\")"
+    status_m5 += "m5_var(status_" + field + ", ['" + str(status[field]) + "'])"
   status_m5 = "m5_eval(" + status_m5 + ")"
   # Run M5.
-  # Delete and create tmp/m5/.
-  os.system("rm -rf tmp/m5")
-  os.mkdir("tmp/m5")
-  # Preppend m5_status to prompt.
-  prompt = status_m5 + prompt
+  # Delete(or not?) and create tmp/m5/.
+  #os.system("rm -rf tmp/m5")
+  if not os.path.exists("tmp/m5"):
+    os.mkdir("tmp/m5")
+  # Preppend m5_status to body.
+  body = status_m5 + body
   # Write prompt to tmp/m5/prompt.txt.m5.
-  with open("tmp/m5/prompt.txt.m5", "w") as file:
-    file.write(prompt)
+  with open("tmp/m5/" + what + "." + api + ".txt.m5", "w") as file:
+    file.write(body)
   # Run M5.
-  os.system(repo_dir + "/M5/bin/m5 --obj_dir tmp/m5 tmp/m5/prompt.txt.m5 > tmp/m5/prompt.txt")
-  # Read prompt.txt.
-  with open("tmp/m5/prompt.txt") as file:
-    prompt = file.read()
-  return prompt
+  os.system(repo_dir + "/M5/bin/m5 --obj_dir tmp/m5 tmp/m5/" + what + "." + api + ".txt.m5 > tmp/m5/" + what + ".txt")
+  # Read <what>.txt.
+  with open("tmp/m5/" + what + ".txt") as file:
+    body = file.read()
+  return body
 
 
 #
@@ -1083,11 +1294,11 @@ def processPromptWithM5(prompt, status):
 #
 
 # Checkpoint any manual edits, run LLM, and checkpoint the result if successful. Return nothing.
-# messages: The messages.json object in OpenAI format.
+# messages: The messages.<api>.json object in OpenAI format.
 # verilog: The current Verilog file contents.
 def run_llm(messages, verilog, model="gpt-3.5-turbo"):
 
-  # Run the LLM, passing the messages.json and verilog file contents.
+  # Run the LLM, passing the messages.<api>.json and verilog file contents.
 
   # Confirm.
   print("")
@@ -1103,12 +1314,19 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
   if os.path.exists("llm_response.txt"):
     reuse_llm_response = prompt_user("There is already a response to this prompt. Would you like to reuse it [y/N]?")
 
+  # For JSON, we use an "extra_fields" field to hold all the extra fields, otherwise these are flat with others.
+  use_extra_fields = apis[models[model]["api"]]["format"] == "json"
+  extra_fields = None  # The object containing extra_fields (and maybe other stuff).
+
   reject = False
+  modified = True
   with FileLocked(working_verilog_file_name):
     checkpoint_if_pending()
     # Capture working file as the version we'll send to the LLM.
     os.system("cp " + working_verilog_file_name + " tmp/pre_llm.v")
-
+    # Make writable.
+    os.system("chmod a+w " + "tmp/pre_llm.v")
+    
     if reuse_llm_response == "y":
       # Use llm_response.txt.
       with open("llm_response.txt") as file:
@@ -1116,41 +1334,42 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
     else:
       # Call the API.
       response_str = llm_api.run(messages, verilog, model)
-      # Write llm_response.txt.
-      with open("llm_response.txt", "w") as file:
-        file.write(response_str)
+      # Write llm_response.txt (unless refusal).
+      if (response_str != ""):
+        with open("llm_response.txt", "w") as file:
+          file.write(response_str)
     
-    response_obj = message_bundler.response_to_obj(response_str, verilog)
+    reject = response_str == ""
 
 
-    # Commented code here is for requesting a JSON object response from the API, which is not the current approach.
-    #
-    ## LLM tends to respond with multi-line strings, which are not valid JSON. Fix this.
-    #response_json = response_json.replace("\n", "\\n")
+    if not reject:
+      # Process the response.
+      response_obj = get_message_bundler_for_model(model).response_to_obj(response_str, verilog)
 
-    #try:
-    #  response = json.loads(response_json)
-    #except:
-    #  print("Error: API response was invalid JSON:")
-    #  print(response_json)
-    #  sys.exit(1)
-
-    # "verilog" field is required.
-    if "verilog" not in response_obj:
-      print("\nError: API response is missing \"verilog\" field.")
-      print("Rejecting response.")
-      response_obj["verilog"] = "...\n"
-      reject = True
-
-    # Are there any modifications to the Verilog?
-    modified = response_obj["verilog"] != "...\n"
-
-    # Check that this prompt produces all requested fields. If it does not, we force rejection.
-    for field in prompts[prompt_id].get("must_produce", []):
-      if field not in response_obj:
-        print("Error: API response is missing required field: " + field)
+      # "verilog" field is required.
+      if "verilog" not in response_obj:
+        print("\nError: API response is missing \"verilog\" field.")
         print("Rejecting response.")
         reject = True
+      elif not response_obj["verilog"]:
+        print("\nError: Failed to process \"verilog\" field in response.")
+        print("Rejecting response.")
+        reject = True
+      else:
+        # Check that this prompt produces all requested fields. If it does not, we force rejection.
+        if "must_produce" in prompts[prompt_id]:
+          if use_extra_fields and not "extra_fields" in response_obj:
+            print("Error: API response is missing \"extra_fields\" field.")
+            print("Rejecting response.")
+            reject = True
+          else:
+            # Make sure all extra_fields exist in response.
+            extra_fields = response_obj if not use_extra_fields else response_obj["extra_fields"]
+            for field in prompts[prompt_id]["must_produce"]:
+              if field not in extra_fields:
+                print("Error: API response is missing required field: " + field)
+                print("Rejecting response.")
+                reject = True
 
     if not reject:
       # We haven't forced rejection.
@@ -1177,8 +1396,12 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       with open(working_verilog_file_name) as file:
         pre_llm_code = file.read()
 
+      code = response_obj["verilog"]
+
+      # Are there any modifications to the Verilog?
+      modified = code != verilog
+
       # Write tmp/llm.v with updated (or not) Verilog.
-      code = response_obj["verilog"] if modified else pre_llm_code
       with open("tmp/llm.v", "w") as file:
         file.write(code)
 
@@ -1196,7 +1419,7 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       ch = prompt_user("Verilog updated by LLM. Review in meld ([m] to open), edit as needed, and accept [a] or reject [r] this updated Verilog?", options=["a", "r", "m"], default="a")
       if ch == "m":
         # Open meld.
-        cmd = "meld feved.v chkpt.v " + working_verilog_file_name + " &"
+        cmd = "meld current/feved.v current/chkpt.v " + working_verilog_file_name + " &"
         print("Running: " + cmd)
         os.system(cmd)
       else:
@@ -1206,7 +1429,7 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
     # If accepted, checkpoint just the LLM's change first, then, if modified by the user,
     # the user's changes.
     
-    # Verilog changes are monitored using meld, comparing working file vs. feved.v (read-only symlink).
+    # Verilog changes are monitored using meld, comparing working file vs. current/feved.v (read-only symlink).
     # TODO: The above must be maintained through commits and reverts.
 
     if ch == "a":
@@ -1219,7 +1442,7 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       
       # Checkpoint the LLM's change, whether modified or not.
       orig_status = readStatus()
-      status = { "by": "llm", "incomplete": response_obj.get("incomplete", False), "modified": modified, "initial": False }
+      status = { "by": "llm", "model": model, "api": api, "incomplete": response_obj.get("incomplete", False), "modified": modified, "initial": False }
       if not modified:
         # Reflect FEV and compile status from prior checkpoint.
         status["compile"] = orig_status.get("compile")
@@ -1229,11 +1452,12 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
         status["plan"] = response_obj["plan"]
       # Apply combination of must_produce and may_produce fields to status.
       for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
-        if field in response_obj:
-          status[field] = response_obj[field]
+        if field in extra_fields:
+          status[field] = extra_fields[field]
+        
       checkpoint(status, orig_status, "tmp/llm.v")
 
-      # Now, checkpoint the user's changes, if their are any.
+      # Now, checkpoint the user's changes, if there are any.
       checkpoint_if_pending()
 
       # Response accepted, so delete llm_response.txt.
@@ -1334,7 +1558,7 @@ def fev_current(use_eqy = True, use_original = False):
       print("Error: FEV failed. Try again.")
       status["fev"] = "failed"
   writeStatus(status)
-  # Update feved.v to link to newly-FEVed code.
+  # Update current/feved.v to link to newly-FEVed code.
   if status["fev"] == "passed":
     update_feved()
    
@@ -1377,7 +1601,7 @@ def print_prompt():
   print("   | " + prompts[prompt_id]["desc"].replace("\n", "\n   | "))
   print("  ")
   print("  Make edits and enter command characters until a candidate is accepted or rejected. Generally, the sequence is:")
-  print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + " and/or messages.json.")
+  print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + " and/or messages.<api>.json.")
   print("    - l/L: (optional) Run the LLM step. (If this fails or is incomplete, make any further manual edits and try again.)")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + ". (You may use \"f\" to run FEV first.)")
   print("    - e/f: Run FEV (EQY/Yosys). (If this fails, make further manual Verilog edits and try again.).")
@@ -1385,7 +1609,7 @@ def print_prompt():
   print("  (At any time: use \"n\" to undo changes; \"h\" for help; \"x\" to exit.)")
   print("  ")
   print("  Enter one of the following commands:")
-  print("    l/L/M: LLM. Send the current prompt to the LLM (gpt-3.5-turbo/gpt-4-turbo/[M]odel-of-choice).")
+  print("    l/L/M: LLM. Send the current prompt to the LLM (o1-mini/gpt-4o/[M]odel-of-choice).")
   print("    e/f/E: Run FEV (EQY/Yosys) on the current code (or [E]QY vs. original).")
   print("    y: Yes. Accept the current code as the completion of this refactoring step (if FEV already run and passed).")
   print("    u: Undo. Revert to a previous version of the code.")
@@ -1406,13 +1630,20 @@ def print_prompt():
       print("    Code has passed FEV.")
 
 
-# Reset the current prompt (which was just started) to a new one.
-# type: "u" for unaccepted, "r" for reinitialize.
-# prev_prompt_id: The prompt ID of the previous step (to be incremented if "r").
+# Reset the current prompt/refactoring-step (which is just starting (by reversion, perhaps)) to a
+# fresh one (type "r") or the previous one (type "u"). For "u", update state files.
+# TODO: There's no checking that the prompt (for "u") is one that should be executed (according
+#       to "if" and "unless").
+# Params:
+#   type: "u" for unaccept, "r" for reinitialize.
+#   prev_prompt_id: The prompt ID of the previous step (to be incremented if "r").
 def reset_prompt(type, prev_prompt_id):
-  # Delete this history directory, decrement the refactoring step number, set prompt ID.
-  # Then, update status to unaccepted ("u") or reinitialize the refactoring step ("r").
-
+  # Unaccept this refactoring step by:
+  #   deleting this history directory for this refactoring step
+  #   decrementing the refactoring step number
+  #   setting the prompt ID
+  # If type is "r", reinitialize a new refactoring step (in place of the old one).
+  # If type is "u", update status to unaccepted ("u").
   global refactoring_step, prompt_id
 
   # Delete the history directory.
@@ -1426,6 +1657,12 @@ def reset_prompt(type, prev_prompt_id):
     init_refactoring_step()
     print("\nRefactoring step reset.")
   else:
+    # Update state files to reflect the unacceptance.
+    initialize_messages_json()
+    update_chkpt()
+    update_feved()
+    write_prompt_id()
+    
     # Unaccept.
     status = readStatus()
     status["accepted"] = False
@@ -1447,13 +1684,84 @@ def reset_prompt(type, prev_prompt_id):
 #############
 
 
-# Response fields.
-response_fields = {"overview", "verilog", "notes", "issues", "incomplete", "plan"}    # ("incomplete" is sticky between LLM runs, so it has special treatment.)
-status_fields = {"by", "compile", "fev", "modified", "incomplete", "accepted", "plan"}
-llm_status_fields = {"incomplete", "plan"}   # These are empty for a refactoring step and updated by LLM runs.
+# The various LLM APIs we support and their properties.
+# In addition to use by this script, these properties are stringified and passed via M5 to
+# default_system_messages.txt.
+apis = {
+  "gpt3":
+      { "system_role": "system",
+        "format": "json",
+        "structured": False,
+        "max_output_tokens": 4096,
+      },
+  "gpt4":
+      { "system_role": "system",
+        "format": "json",
+        "structured": False,
+        "max_output_tokens": 4096,
+      },
+  "o-simple":
+      { "system_role": "user",
+        "format": "md",
+        "structured": False,
+      },
+  "o":
+      { "system_role": "developer",
+        "format": "json",
+        "structured": True,
+      },
+}
+models = {
+  "gpt-3.5-turbo": {"api": "gpt3"},
+  "gpt-4-turbo": {"api": "gpt4"},
+  "o1-mini": {"api": "o-simple"},
+  "o1-preview": {"api": "o-simple"},
+  "o1": {"api": "o"},
+  "o3-mini": {"api": "o"},
+  "gpt-4o": {"api": "o"},
+  "gpt-4o-mini": {"api": "o"},
+}
 
+
+# The JSON schema for the LLM API, which is passed, e.g.:
+json_schema = {
+  "name": "verilog_refactoring",
+  "strict": True,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "verilog": {"type": "string", "description": "The refactored Verilog code (with \"...\" lines representing omitted unchanged code)."},
+      "overview": {"type": "string", "description": "A brief overview of the changes."},
+      "incomplete": {"type": "boolean", "description": "Whether further refactoring is required for this refactoring step."},
+      "issues": {"type": "string", "description": "Any issues encountered during refactoring."},
+      "notes": {"type": "string", "description": "Any notes for the user about the refactoring."},
+      "plan": {"type": "string", "description": "The plan for completing this refactoring step if incomplete."},
+    },
+    "required": ["verilog", "overview", "incomplete", "issues", "notes", "plan"],
+    "additionalProperties": False
+  }
+}
+
+
+# Response fields.
+response_fields = {"overview", "verilog", "notes", "issues", "incomplete", "plan", "extra_fields"}    # ("incomplete" is sticky between LLM runs, so it has special treatment.)
+status_fields = {"by", "api", "compile", "fev", "modified", "incomplete", "accepted", "plan"}  # Status fields that are not sticky.
+llm_status_fields = {"incomplete", "plan"}   # These are empty for a refactoring step and updated by LLM runs.
+# (Fields not listed above are sticky.)
+
+# TODO: We've overloaded the term "API". Change to "API Vendor"?
+# TODO: This should be dynamic, so we should look it up based on the chosen API.
 llm_api = OpenAI_API()
-message_bundler = PseudoMarkdownMessageBundler()
+
+# TODO: It looks like all models support JSON output, and we can eliminate support for "md" responses.
+message_bundler = {
+  "json": JsonMessageBundler(),
+  "md": PseudoMarkdownMessageBundler(),
+}
+def get_message_bundler_for_model(model):
+  return message_bundler[apis[models[model]["api"]]["format"]]
+def get_message_bundler_for_api(api):
+  return message_bundler[apis[api]["format"]]
 
 # Get the directory of this script.
 repo_dir = os.path.dirname(os.path.realpath(__file__))
@@ -1505,11 +1813,11 @@ files = [f for f in os.listdir(".") if is_verilog(f)]
 if len(files) != 1 and not os.path.exists("history"):
   print("Error: There must be exactly one Verilog file or a \"history\" directory in the current working directory.")
   usage()
-# Choose the shortest Verilog file name as the one to convert (excluding "feved.v").
+# Choose the shortest Verilog file name as the one to convert (excluding "current/feved.v").
 file_name_len = 1000
 working_verilog_file_name = None
 for file in files:
-  if (file != "feved.v") and (len(file) < file_name_len):
+  if len(file) < file_name_len:
     file_name_len = len(file)
     working_verilog_file_name = file
 if not working_verilog_file_name:
@@ -1555,8 +1863,10 @@ if not os.path.exists("history"):
   os.mkdir("history")
   if not os.path.exists("tmp"):
     os.mkdir("tmp")
-  if not os.path.exists("feved.v"):
-    os.system("ln -s ../history/1/mod_0/" + working_verilog_file_name + " feved.v")
+  if not os.path.exists("current"):
+    os.mkdir("current")
+  if not os.path.exists("current/feved.v"):
+    os.system("ln -s ../history/1/mod_0/" + working_verilog_file_name + " current/feved.v")
   init_refactoring_step()
 else:
   # Determine the current state of the conversion process.
@@ -1574,10 +1884,17 @@ else:
         prompt_id = read_prompt_id(f)
     cn -= 1
   
-  # If messages.json is older than prompts.json or default_system_message.txt, reinitialize it.
-  if (not os.path.exists("messages.json")) or (os.path.getmtime("messages.json") < os.path.getmtime(repo_dir + "/prompts.json")) or (os.path.getmtime("messages.json") < os.path.getmtime(repo_dir + "/default_system_message.txt")):
+  # If messages.<api>.json is/are older than prompts.json or default_system_message.txt, reinitialize it/them.
+  # For every API ("gpt", "o"), initialize messages.<api>.json.
+  reinitialize = False
+  for api in apis:
+    messages_json = "messages." + api + ".json"
+
+    if (not os.path.exists(messages_json)) or (os.path.getmtime(messages_json) < os.path.getmtime(repo_dir + "/prompts.json")) or (os.path.getmtime(messages_json) < os.path.getmtime(repo_dir + "/default_system_message.txt")):
+      reinitialize = True
+  if reinitialize:
     # Confirm.
-    ch = prompt_user("messages.json is missing or out of date. Reinitialize?", {"y", "n"}, "y")
+    ch = prompt_user("\"messages.<api>.json\" is/are missing or out of date. Reinitialize?", {"y", "n"}, "y")
     if ch == "y":
       initialize_messages_json()
 
@@ -1592,11 +1909,13 @@ else:
 # Perform the next refactoring step until the user exits.
 while True:
 
-  # Determine whether the default_system_message.txt file has been modified after messages.json.
-  if os.path.exists(repo_dir + "/default_system_message.txt") and os.path.exists("messages.json"):
-    if os.path.getmtime(repo_dir + "/default_system_message.txt") > os.path.getmtime("messages.json"):
-      print("Warning: default_system_message.txt has been modified since messages.json.")
-      print("         Use \"u\" (repeated as needed), then \"r\" to reset the current refactoring step to pick up changes.\n")
+  # Determine whether the default_system_message.txt file has been modified after messages.<api>.json.
+  for api in apis:
+    messages_json = "messages." + api + ".json"
+    if os.path.exists(repo_dir + "/default_system_message.txt") and os.path.exists(messages_json):
+      if os.path.getmtime(repo_dir + "/default_system_message.txt") > os.path.getmtime(messages_json):
+        print("Warning: default_system_message.txt has been modified since " + messages_json + ".")
+        print("         Use \"u\" (repeated as needed), then \"r\" to reset the current refactoring step to pick up changes.\n")
   # Prompt the user.
   print_prompt()
 
@@ -1611,9 +1930,9 @@ while True:
       # Determine model.
       model = None
       if key == "l":
-        model = "gpt-3.5-turbo"
+        model = "o1-mini"
       elif key == "L":
-        model = "gpt-4-turbo"
+        model = "gpt-4o"
       elif key == "M":
         # Print a list of models by number, and let the user choose one.
         print("Choose a model:")
@@ -1621,7 +1940,8 @@ while True:
           if hasattr(llm_api.models.data[i], 'id'):
             # Use letters for the models (a-zA-Z), so we can represent them in a single character.
             ch = chr(ord('a') + i) if i < 26 else chr(ord('A') + i - 26)
-            print(f"  {ch}: {llm_api.models.data[i].id}")
+            supported_char = "*" if models.get(llm_api.models.data[i].id) != None else " "
+            print(f" {supported_char}{ch}: {llm_api.models.data[i].id}")
         while True:
           model_char = prompt_user("Enter the model letter.")
           o = ord(model_char)
@@ -1631,14 +1951,26 @@ while True:
           elif o >= ord('A') and o <= ord('Z'):
             model_num = o - ord('A') + 26
           if model_num < 0 or model_num >= len(llm_api.models.data) or not hasattr(llm_api.models.data[i], 'id'):
-            print("Error: Invalid model ID. Choose a different command.")
+            print("\nInvalid model ID. Choose again.")
           else:
             model = llm_api.models.data[model_num].id
+            if models.get(model) == None:
+              print("\nError: Unsupported model.")
+              print("\nChoose a different one.")
             break
       else:
         print("Bug: Invalid model.")
         fail()
+
+
+      # Determine the API
+      api = models[model]["api"]
+      if apis.get(api) == None:
+        print("Bug: Invalid API.")
+        fail()
       
+      messages_json = "messages." + api + ".json"
+
       # Run the LLM (if not already run).
       do_it = True
       if llm_finished():
@@ -1647,16 +1979,21 @@ while True:
           print("Aborted. Choose a different command.")
           do_it = False
       if do_it:
-        with open("messages.json") as message_file:
+        with open(messages_json) as message_file:
           with open(working_verilog_file_name) as verilog_file:
             verilog = verilog_file.read()
             # Strip leading and trailing whitespace, then add trailing newline.
             verilog = verilog.strip() + "\n"
-            messages = json.loads(from_extended_json(message_file.read()))
+            msg_file_str = message_file.read()
+            msg_json = from_extended_json(msg_file_str)
+            ## Dump the JSON to a file for debugging.
+            #with open("tmp/messages_debug.json", "w") as file:
+            #  file.write(msg_json)
+            messages = json.loads(msg_json)
             # Add "plan" field if given.
             status = readStatus()
             if "plan" in status:
-              messages[-1].content += ("\n\nYou have already made some progress and have established this plan:\n\n" + status["plan"])
+              messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
             run_llm(messages, verilog, model)
     elif key == "e":
       fev_current(True)
@@ -1770,7 +2107,7 @@ while True:
         else:
           print("There is no previous modification in the current refactoring step.")
           print("What would you like to do:")
-          print("    [u]naccept (irreversibly) the last refactoring step")
+          print("    [u]naccept (irreversibly) this refactoring step")
           print("    [r]eset this refactoring step")
           resp = prompt_user("    [N]othing", ["u", "r", "n"], "n")
         # Handle the user's response.
@@ -1779,6 +2116,9 @@ while True:
           if refactoring_step > 0:
             with open("history/" + str(refactoring_step) + "/prompt_id.txt") as f:
               next_prompt_id = read_prompt_id(f)
+              # TODO: Not sure why I read this. Isn't this the same as the current prompt_id?
+              if prompt_id != next_prompt_id:
+                print("Bug: Prompt ID mismatch. Continuing anyway.")
           else:
             next_prompt_id = 0
           
@@ -1791,10 +2131,10 @@ while True:
         # Revert to a previous version of the code.
         print("Reverting to the previous version of the code.")
         show_diff(mod, prev_mod)
-        # Copy the checkpointed verilog, messages.json (if it exists), and llm_response.txt (if it exists).
+        # Copy the checkpointed verilog, messages.<api>.json (if it exists), and llm_response.txt (if it exists).
         os.system("cp " + mod_path(prev_mod) + "/" + working_verilog_file_name + " " + working_verilog_file_name)
-        if os.path.exists(mod_path(prev_mod) + "/messages.json"):
-          os.system("cp " + mod_path(prev_mod) + "/messages.json messages.json")
+        if os.path.exists(mod_path(prev_mod) + "/" + messages_json):
+          os.system("cp " + mod_path(prev_mod) + "/" + messages_json + " " + messages_json)
         if os.path.exists(mod_path(prev_mod) + "/llm_response.txt"):
           os.system("cp " + mod_path(prev_mod) + "/llm_response.txt llm_response.txt")
 
