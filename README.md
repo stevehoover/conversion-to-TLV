@@ -35,6 +35,17 @@ This flow chart illustrates the conversion process provided by `convert.py`. It 
 
 The initial script is in place for the Verilog conversion steps.
 
+## Contributing
+
+Here are a few ideas for those interested in contributing:
+
+- Use the learning resources in Makerchip to learn about TL-Verilog.
+- Use the learning resources in Makerchip and https://github.com/rweda/M5 to learn M5, which is used to parameterize prompts.
+- If you'd like to explore LLM-assisted visualization, use the learning resources in Makerchip to learn Visual Debug.
+- Study the current prompts https://github.com/stevehoover/conversion-to-TLV/blob/main/prompts.json, capturing any thoughts.
+- Choose some simple open-source Verilog modules to convert. Run the flow to convert them. Do not use the LLM. Make each change manually as if you are the LLM. Debug using FEV (run by the flow). Capture learnings.
+- Get an OpenAI API key and convert more. Make incremental improvements along the way.
+
 ## Ideas for Verilog Code Sources
 
 - https://github.com/NVlabs/verilog-eval/blob/main/data/VerilogEval_Human.jsonl
