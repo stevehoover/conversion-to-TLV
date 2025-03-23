@@ -41,17 +41,7 @@ The initial script is in place for the Verilog conversion steps.
 
 - Python 3.10 or higher
 - Git
-- Build tools (gcc, make, etc.)
-- OpenAI API key (for LLM integration)
-
-### System Dependencies
-
-The project requires several system-level tools for formal verification and synthesis:
-
-- Yosys (for synthesis)
-- SymbiYosys (for formal verification)
-- EQY (for equivalence checking)
-- Z3 (SMT solver)
+- Linux/Unix-based system (tested on Ubuntu 22.04)
 
 ### Quick Start
 
@@ -61,43 +51,45 @@ The project requires several system-level tools for formal verification and synt
    cd conversion-to-TLV
    ```
 
-2. Run the initialization script to install all dependencies:
+2. Run the initialization script:
    ```bash
    ./init
    ```
+   This script will:
+   - Install required system packages
+   - Set up Python environment
+   - Install and configure Yosys, SymbiYosys, and EQY
+   - Verify tool installations
 
-3. Set up your OpenAI API key (choose one method):
-   ```bash
-   # Option 1: Environment variable
-   export OPENAI_API_KEY='your-api-key-here'
-   
-   # Option 2: Configuration file
-   mkdir -p ~/.openai
-   echo 'your-api-key-here' > ~/.openai/key.txt
-   ```
+3. Configure OpenAI API access:
+   Place your OpenAI API key in `~/.openai/key.txt`
 
 ### Troubleshooting
 
-Common issues and solutions:
+If you encounter issues:
 
-1. **Tool installation fails**:
-   - Ensure all system dependencies are installed
-   - Check if you have sufficient disk space
-   - Try cleaning the build: `./make_clean`
+1. **Tool verification**:
+   Check installed tools with:
+   ```bash
+   yosys --version    # Should show Yosys version
+   sby --version      # Should show SymbiYosys version
+   eqy --version     # Should show EQY version
+   ```
 
-2. **SymbiYosys fails to find Yosys**:
-   - Verify Yosys is in your PATH: `which yosys`
-   - Check Yosys installation: `yosys --version`
+2. **Clean build**:
+   If you need to clean the build:
+   ```bash
+   ./make_clean
+   ```
 
-3. **Python package installation fails**:
-   - Try upgrading pip: `python3 -m pip install --upgrade pip`
-   - Use virtual environment: `python3 -m venv venv && source venv/bin/activate`
+3. **Python environment**:
+   The project uses a virtual environment. If needed:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
 
-4. **Formal verification tools not found**:
-   - Ensure all tools are in your PATH
-   - Check tool versions: `yosys --version && sby --version && eqy --version`
-
-For more detailed troubleshooting, please open an issue in the repository.
+For additional help, please open an issue in the repository.
 
 ## Contributing
 
