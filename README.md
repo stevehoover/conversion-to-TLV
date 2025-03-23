@@ -63,48 +63,27 @@ The project requires several system-level tools for formal verification and synt
 
 2. Run the initialization script to install all dependencies:
    ```bash
-   chmod +x init
    ./init
    ```
 
-3. Set up your OpenAI API key:
+3. Set up your OpenAI API key (choose one method):
    ```bash
+   # Option 1: Environment variable
    export OPENAI_API_KEY='your-api-key-here'
-   ```
-
-### Manual Installation
-
-If you prefer to install dependencies manually:
-
-1. Install system dependencies:
-   ```bash
-   # For Ubuntu/Debian
-   sudo apt-get update
-   sudo apt-get install -y build-essential git python3 python3-pip tcl-dev libffi-dev libreadline-dev bison flex pkg-config zlib1g-dev graphviz
    
-   # For macOS
-   brew install python3 tcl libffi readline bison flex pkg-config zlib graphviz
+   # Option 2: Configuration file
+   mkdir -p ~/.openai
+   echo 'your-api-key-here' > ~/.openai/key.txt
    ```
-
-2. Install Python dependencies:
-   ```bash
-   python3 -m pip install --upgrade pip
-   pip3 install pynput openai
-   ```
-
-3. Install verification tools:
-   - [Yosys Installation Guide](https://github.com/YosysHQ/yosys#building-from-source)
-   - [SymbiYosys Installation Guide](https://github.com/YosysHQ/SymbiYosys#building-from-source)
-   - [EQY Installation Guide](https://github.com/YosysHQ/eqy#building-from-source)
 
 ### Troubleshooting
 
 Common issues and solutions:
 
-1. **Yosys build fails**:
+1. **Tool installation fails**:
    - Ensure all system dependencies are installed
    - Check if you have sufficient disk space
-   - Try cleaning the build directory: `make clean`
+   - Try cleaning the build: `./make_clean`
 
 2. **SymbiYosys fails to find Yosys**:
    - Verify Yosys is in your PATH: `which yosys`
