@@ -35,6 +35,91 @@ This flow chart illustrates the conversion process provided by `convert.py`. It 
 
 The initial script is in place for the Verilog conversion steps.
 
+## Installation and Setup
+
+### Prerequisites
+
+- Python 3.10 or higher
+- Git
+- Build tools (gcc, make, etc.)
+- OpenAI API key (for LLM integration)
+
+### System Dependencies
+
+The project requires several system-level tools for formal verification and synthesis:
+
+- Yosys (for synthesis)
+- SymbiYosys (for formal verification)
+- EQY (for equivalence checking)
+- Z3 (SMT solver)
+
+### Quick Start
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/stevehoover/conversion-to-TLV.git
+   cd conversion-to-TLV
+   ```
+
+2. Run the initialization script to install all dependencies:
+   ```bash
+   chmod +x init
+   ./init
+   ```
+
+3. Set up your OpenAI API key:
+   ```bash
+   export OPENAI_API_KEY='your-api-key-here'
+   ```
+
+### Manual Installation
+
+If you prefer to install dependencies manually:
+
+1. Install system dependencies:
+   ```bash
+   # For Ubuntu/Debian
+   sudo apt-get update
+   sudo apt-get install -y build-essential git python3 python3-pip tcl-dev libffi-dev libreadline-dev bison flex pkg-config zlib1g-dev graphviz
+   
+   # For macOS
+   brew install python3 tcl libffi readline bison flex pkg-config zlib graphviz
+   ```
+
+2. Install Python dependencies:
+   ```bash
+   python3 -m pip install --upgrade pip
+   pip3 install pynput openai
+   ```
+
+3. Install verification tools:
+   - [Yosys Installation Guide](https://github.com/YosysHQ/yosys#building-from-source)
+   - [SymbiYosys Installation Guide](https://github.com/YosysHQ/SymbiYosys#building-from-source)
+   - [EQY Installation Guide](https://github.com/YosysHQ/eqy#building-from-source)
+
+### Troubleshooting
+
+Common issues and solutions:
+
+1. **Yosys build fails**:
+   - Ensure all system dependencies are installed
+   - Check if you have sufficient disk space
+   - Try cleaning the build directory: `make clean`
+
+2. **SymbiYosys fails to find Yosys**:
+   - Verify Yosys is in your PATH: `which yosys`
+   - Check Yosys installation: `yosys --version`
+
+3. **Python package installation fails**:
+   - Try upgrading pip: `python3 -m pip install --upgrade pip`
+   - Use virtual environment: `python3 -m venv venv && source venv/bin/activate`
+
+4. **Formal verification tools not found**:
+   - Ensure all tools are in your PATH
+   - Check tool versions: `yosys --version && sby --version && eqy --version`
+
+For more detailed troubleshooting, please open an issue in the repository.
+
 ## Contributing
 
 Here are a few ideas for those interested in contributing:
