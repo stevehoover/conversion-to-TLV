@@ -1,0 +1,66 @@
+Metadata-Version: 2.1
+Name: sandpiper-saas
+Version: 1.1.0
+Summary: Sandpiper SaaS
+Home-page: UNKNOWN
+Author: Redwood EDA, LLC
+License: UNKNOWN
+Keywords: sandpiper tlv tl-verilog verilog rtl hdl compiler
+Platform: UNKNOWN
+Classifier: License :: OSI Approved :: MIT License
+Description-Content-Type: text/markdown
+License-File: LICENSE.md
+Requires-Dist: Path
+Requires-Dist: argparse
+Requires-Dist: click
+Requires-Dist: requests
+
+# SandPiper SaaS
+
+## Overview
+
+SandPiper SaaS Edition runs [Redwood EDA, LLC](https://redwoodeda.com)'s [SandPiper](https://redwoodeda.com/products)™ [TL-Verilog](https://tl-x.org) compiler as a microservice in the cloud to support low-overhead and zero-cost open-source development using commercial-grade capabilities. This simple Python script provides a convenient command-line interface to the microservice. It is used by exciting projects such as [WARP-V](https://github.com/stevehoover/warp-v) and [1st CLaaS](https://github.com/stevehoover/1st-CLaaS).
+
+A TL-Verilog-enhanced open-source Verilog development flow might also make use of the similarly-light-weight [makerchip-app](https://pypi.org/project/makerchip-app/) for TL-Verilog editing.
+
+## Install
+
+```
+pip3 install sandpiper-saas
+```
+
+**OR**, from the git repository itself:
+
+```
+git clone git@gitlab.com:rweda/sandpiper-saas.git
+cd sandpiper-saas
+pip3 install .
+```
+
+## Basic Usage
+
+On an existing TL-Verilog source file:
+
+```
+sandpiper-saas -i design.tlv -o design.sv
+```
+
+For complete usage instructions:
+
+```
+sandpiper-saas --help
+```
+
+For SandPiper usage instructions:
+
+```
+sandpiper-saas --sphelp
+```
+
+## Help
+
+Feel free to contact [Redwood EDA, LLC](https://redwoodeda.com) for [assistance](mailto:support@redwoodeda.com).
+
+## Enjoy!
+
+

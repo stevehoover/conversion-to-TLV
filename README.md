@@ -1,10 +1,10 @@
-# Semi-automated Conversion from Verilog to TL-Verilog Using LLMs
+#Conversion from Verilog to TL-Verilog Using LLMs
 
 ## Goal
 
 To use LLMs and TL-Verilog to improve all existing Verilog by reducing its size, improving its maintainability, making it more configurable, and identifying bugs? How could we possibly do all that? Transaction-Level Verilog (TL-Verilog) models are smaller, cleaner, and less bug-prone than their Verilog counterparts. But there's not much TL-Verilog in the wild yet. Advancements in AI make it feasible to automate the process of converting existing Verilog models to TL-Verilog.
 
-If you ask ChatGPT to convert your code today, you won't be happy with the results[.](https://gitlab.com/rweda/Makerchip-public) But with a thoughtful approach, LLMs can help. Through a series of incremental conversion steps, backed by formal verification, automated conversion is possible, and the results will have better quality than without LLM, especially when it comes to preserving meaningful comments.
+If you ask ChatGPT to convert your code today, you won't be happy with the results. But with a thoughtful approach, LLMs can help. Through a series of incremental conversion steps, backed by formal verification, automated conversion is possible, and the results will have better quality than without LLM, especially when it comes to preserving meaningful comments.
 
 ## Approach
 
@@ -53,6 +53,7 @@ The initial script is in place for the Verilog conversion steps.
 
 2. Run the initialization script:
    ```bash
+   chmod +x init
    ./init
    ```
    This script will:
@@ -62,7 +63,11 @@ The initial script is in place for the Verilog conversion steps.
    - Verify tool installations
 
 3. Configure OpenAI API access:
-   Place your OpenAI API key in `~/.openai/key.txt`
+   Place your OpenAI API key in `~/.openai/key.txt`:
+   ```bash
+   mkdir -p ~/.openai
+   echo "your-api-key-here" > ~/.openai/key.txt
+   ```
 
 ### Troubleshooting
 

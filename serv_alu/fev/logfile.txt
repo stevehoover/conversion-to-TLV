@@ -1,0 +1,6 @@
+EQY 21:57:41 [fev] read_gold: starting process "yosys -ql fev/gold.log fev/gold.ys"
+EQY 21:57:42 [fev] read_gold: ERROR: Module `serv_alu_orig' not found!
+EQY 21:57:42 [fev] read_gate: starting process "yosys -ql fev/gate.log fev/gate.ys"
+EQY 21:57:42 [fev] read_gold: finished (returncode=1)
+EQY 21:57:42 [fev] read_gold: job failed. ERROR.
+EQY 21:57:42 [fev] read_gate: terminating process

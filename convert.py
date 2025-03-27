@@ -1282,7 +1282,7 @@ def processWithM5(what, api, body, status):
   with open("tmp/m5/" + what + "." + api + ".txt.m5", "w") as file:
     file.write(body)
   # Run M5.
-  os.system(repo_dir + "/M5/bin/m5 --obj_dir tmp/m5 tmp/m5/" + what + "." + api + ".txt.m5 > tmp/m5/" + what + ".txt")
+ # os.system(repo_dir + "/M5/bin/m5 --obj_dir tmp/m5 tmp/m5/" + what + "." + api + ".txt.m5 > tmp/m5/" + what + ".txt")
   # Read <what>.txt.
   with open("tmp/m5/" + what + ".txt") as file:
     body = file.read()

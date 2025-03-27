@@ -1,0 +1,6 @@
+read_verilog -sv -DGOLD /home/nageswararao/Documents/conversion-to-TLV/serv_alu/serv_alu_orig.v
+prep -top serv_alu_orig
+opt_clean
+check -initdrv
+setundef -undriven -undef
+write_rtlil fev/gold.il

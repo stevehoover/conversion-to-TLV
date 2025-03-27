@@ -1,0 +1,3 @@
+[console_scripts]
+sandpiper-saas = sandpiper:run
+

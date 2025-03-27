@@ -1,0 +1,13 @@
+[gold]
+read_verilog -sv -DGOLD /home/nageswararao/Documents/conversion-to-TLV/serv_alu/serv_alu_orig.v
+prep -top serv_alu_orig
+
+[gate]
+read_verilog -sv -DGATE /home/nageswararao/Documents/conversion-to-TLV/serv_alu/serv_alu_orig.v
+prep -top serv_alu_orig
+
+[collect *]
+
+[strategy simple]
+use sat
+depth 10

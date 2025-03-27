@@ -1,0 +1,13 @@
+[gold]
+read_verilog -sv -DGOLD /home/nageswararao/Documents/conversion-to-TLV/test.v
+prep -top test
+
+[gate]
+read_verilog -sv -DGATE /home/nageswararao/Documents/conversion-to-TLV/test.v
+prep -top test
+
+[collect *]
+
+[strategy simple]
+use sat
+depth 10
