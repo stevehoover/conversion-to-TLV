@@ -37,7 +37,9 @@ The initial script is in place for the Verilog conversion steps.
 
 ## Contributing
 
-Here are a few ideas for those interested in contributing:
+### Getting Started
+
+Here are a few ideas to prepare for contributing:
 
 - Use the learning resources in Makerchip to learn about TL-Verilog.
 - Use the learning resources in Makerchip and https://github.com/rweda/M5 to learn M5, which is used to parameterize prompts.
@@ -45,6 +47,17 @@ Here are a few ideas for those interested in contributing:
 - Study the current prompts https://github.com/stevehoover/conversion-to-TLV/blob/main/prompts.json, capturing any thoughts.
 - Choose some simple open-source Verilog modules to convert. Run the flow to convert them. Do not use the LLM. Make each change manually as if you are the LLM. Debug using FEV (run by the flow). Capture learnings.
 - Get an OpenAI API key and convert more. Make incremental improvements along the way.
+
+### Do Some Conversions
+
+The intent is improve LLMs' ability to convert Verilog to TL-Verilog. We teach it through prompts. We convert. The conversion process captures what we've done. LLMs can train on this to become more savvy. Initially, there will be a lot of human guidance. Over time the LLMs become more capable.
+
+So, where do we keep all this training data. Here are the current thoughts:
+  - Fork this repo.
+  - Do some conversions.
+  - Push the history.
+  - Do not create a pull request. You're repo will provide the training.
+  - But, do push a reference to your repo to the main repo. See the [Conversions.md](./Conversions.md).
 
 ## Ideas for Verilog Code Sources
 
