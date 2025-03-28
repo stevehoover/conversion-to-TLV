@@ -1,3 +1,110 @@
 #!/bin/bash
 
-pip install pynput openai
+# Exit on any error
+set -e
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to install system dependencies
+install_system_deps() {
+    echo "🔧 Installing system dependencies..."
+    if command_exists apt-get; then
+        sudo apt-get update
+        sudo apt-get install -y build-essential clang bison flex \
+            libreadline-dev gawk tcl-dev libffi-dev git \
+            graphviz xdot pkg-config python3 python3-pip \
+            libboost-system-dev libboost-python-dev libboost-filesystem-dev \
+            zlib1g-dev
+    elif command_exists brew; then
+        brew install bison flex readline gawk tcl-tk libffi git \
+            graphviz boost python3
+    else
+        echo "❌ Error: No supported package manager found (apt-get or brew)"
+        exit 1
+    fi
+}
+
+# Function to install Python dependencies
+install_python_deps() {
+    echo "🐍 Installing Python dependencies..."
+    pip3 install --upgrade pip
+    pip3 install pynput openai
+}
+
+# Function to install Yosys
+install_yosys() {
+    echo "🔧 Installing Yosys..."
+    if command_exists yosys; then
+        echo "✅ Yosys is already installed"
+        return
+    fi
+
+    # Clone and build Yosys
+    git clone https://github.com/YosysHQ/yosys.git
+    cd yosys
+    make config-gcc
+    make -j$(nproc)
+    sudo make install
+    cd ..
+    rm -rf yosys
+}
+
+# Function to install SymbiYosys
+install_symbiyosys() {
+    echo "🔧 Installing SymbiYosys..."
+    if command_exists sby; then
+        echo "✅ SymbiYosys is already installed"
+        return
+    fi
+
+    # Install Z3 solver
+    if ! command_exists z3; then
+        echo "Installing Z3 solver..."
+        sudo apt-get install -y z3
+    fi
+
+    # Clone and build SymbiYosys
+    git clone https://github.com/YosysHQ/SymbiYosys.git
+    cd SymbiYosys
+    sudo make install
+    cd ..
+    rm -rf SymbiYosys
+}
+
+# Function to install EQY
+install_eqy() {
+    echo "🔧 Installing EQY..."
+    if command_exists eqy; then
+        echo "✅ EQY is already installed"
+        return
+    fi
+
+    # Clone and build EQY
+    git clone https://github.com/YosysHQ/eqy.git
+    cd eqy
+    make
+    sudo make install
+    cd ..
+    rm -rf eqy
+}
+
+# Main installation process
+echo "🚀 Starting installation process..."
+
+# Install dependencies
+install_system_deps
+install_python_deps
+
+# Install EDA tools
+install_yosys
+install_symbiyosys
+install_eqy
+
+echo "✅ Installation complete! The following tools are now available:"
+echo "  - Yosys: $(yosys --version)"
+echo "  - SymbiYosys: $(sby --version)"
+echo "  - EQY: $(eqy --version)"
+echo "  - Python packages: pynput, openai"
