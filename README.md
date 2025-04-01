@@ -57,3 +57,14 @@ Here are a few ideas for those interested in contributing:
   - cv32e40p
 - Verilog libraries (These will be more difficult due to parameterization.)
   - BaseJump STL
+
+# Conversion Examples
+
+## By sharma-sugurthi
+Repository: [TL-Verilog Conversion Examples](https://github.com/sharma-sugurthi/conversion-to-TLV)
+
+Examples include:
+- Basic circuits (D flip-flop, counter, 2-to-1 mux)
+- Intermediate designs (shift register, traffic light controller)
+- Sequence detector with state machine
+- Detailed conversion steps and tutorials
