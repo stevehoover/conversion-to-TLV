@@ -1,1 +1,6 @@
 /fev_prove
+venv
+tmp
+messages*
+current
+CRC.v
