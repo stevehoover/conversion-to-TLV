@@ -52,6 +52,15 @@ Here are a few ideas to prepare for contributing:
 
 The intent is improve LLMs' ability to convert Verilog to TL-Verilog. We teach it through prompts. We convert. The conversion process captures what we've done. LLMs can train on this to become more savvy. Initially, there will be a lot of human guidance. Over time the LLMs become more capable.
 
+## Conversion Examples
+
+### By sharma-sugurthi
+Repository: [TL-Verilog Conversion Examples](https://github.com/sharma-sugurthi/conversion-to-TLV)
+- Basic circuits (D flip-flop, counter, 2-to-1 mux)
+- Intermediate designs (shift register, traffic light controller)
+- Sequence detector with state machine
+- Detailed conversion steps and tutorials
+
 So, where do we keep all this training data. Here are the current thoughts:
   - Fork this repo.
   - Do some conversions.
