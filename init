@@ -45,6 +45,7 @@ install_yosys() {
     # Clone and build Yosys
     git clone https://github.com/YosysHQ/yosys.git
     cd yosys
+    git submodule update --init --recursive
     make config-gcc
     make -j$(nproc)
     sudo make install

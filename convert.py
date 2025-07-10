@@ -104,6 +104,7 @@ import atexit
 import signal
 from select import select
 from abc import ABC, abstractmethod
+from dotenv import load_dotenv
 import json
 import re
 import shutil
@@ -116,7 +117,8 @@ if sys.version_info < (3, 7):
   print("Error: This script requires Python 3.7 or later.")
   sys.exit(1)
 
-
+# Load environment variables from .env file.
+load_dotenv()
 
 
 #############
@@ -353,7 +355,8 @@ class Gemini_API(LLM_API):
     # Initialize the Gemini client
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
     self.models = genai.list_models()
-    self.model_ids = [m.name for m in self.models]
+    self.model_ids = [m.name.replace("models/", "") for m in self.models]
+    print("Available Gemini models:", self.model_ids)
   
   def validateModel(self, model):
     # Check if model is in available models
@@ -384,8 +387,12 @@ class Gemini_API(LLM_API):
       # Convert OpenAI format messages to Gemini format
       gemini_messages = []
       for msg in messages:
-        role = "user" if msg["role"] in ["user", "system"] else "model"
-        gemini_messages.append({"role": role, "parts": [msg["content"]]})
+        if msg["role"] == "system":
+            gemini_messages.append({"role": "system", "parts": [msg["content"]]})
+        elif msg["role"] == "user":
+            gemini_messages.append({"role": "user", "parts": [msg["content"]]})
+        else:
+            gemini_messages.append({"role": "model", "parts": [msg["content"]]})
       
       # Create Gemini model with appropriate parameters
       generation_config = {
@@ -2112,6 +2119,11 @@ while True:
             #with open("tmp/messages_debug.json", "w") as file:
             #  file.write(msg_json)
             messages = json.loads(msg_json)
+            # Normalize 'parts' → 'content' for all messages
+            for m in messages:
+                if "parts" in m and "content" not in m:
+                    m["content"] = "".join(m["parts"])  # assumes parts is a list of strings
+                    del m["parts"]
             # Add "plan" field if given.
             status = readStatus()
             if "plan" in status:
