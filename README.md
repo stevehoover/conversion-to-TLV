@@ -79,3 +79,38 @@ So, where do we keep all this training data. Here are the current thoughts:
   - cv32e40p
 - Verilog libraries (These will be more difficult due to parameterization.)
   - BaseJump STL
+
+## API Key Generation for Gemini
+
+You can obtain the free API key for Google Gemini via [AI Studio](https://aistudio.google.com/prompts/new_chat) by logging in or creating an account, then navigating to "Get API Key," reviewing the terms, and generating your key. Keep in mind that the free-tier key has rate limitations, so for higher usage, you may need to upgrade to a paid plan.
+
+## Windows Support (WSL)
+
+If you're using Windows, you can run the `convert.py` script via Windows Subsystem for Linux (WSL). Follow the instructions below to set it up:
+1. **Install WSL**
+   - Open the start menu and search for "Turn Windows features on or off".
+   - Enable "Virtual Machine Platform" and "Windows Subsystem for Linux".
+   - Save your work and restart the computer to apply the changes.
+   - A new empty folder named "Linux" will be created in the file explorer.
+   - Open Command Prompt (cmd) and update WSL by running:
+     ```bash
+     wsl --update
+     ```
+   - Verify the installation by checking the version:
+     ```bash
+     wsl --version
+     ```
+   - Repeat the update steps until you see:
+     "The most recent version of Windows Subsystem for Linux is already installed."
+2. **Install Ubuntu**
+   - List available Linux distributions:
+     ```bash
+     wsl --list --online
+     ```
+   - Choose a distribution (e.g., Ubuntu-22.04) and install it:
+     ```bash
+     wsl --install --d Ubuntu-22.04
+     ```
+   - Enter new UNIX username and password and the operation will be completed successfully.
+  
+For a visual guide, check out this [installation tutorial](https://youtu.be/gTf32sX9ci0?si=YiCRS6dEqilfIrEv).

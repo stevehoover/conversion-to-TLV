@@ -1,1 +1,13 @@
 /fev_prove
+SymbiYosys/
+yosys/
+fev
+venv
+.env*
+tmp
+history
+current
+messages*
+current
+*.v
+*.sv
