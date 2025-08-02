@@ -111,6 +111,7 @@ import shutil
 import stat
 import copy
 import google.generativeai as genai
+import anthropic
 
 # Confirm that we're using Python 3.7 or later (as we rely on dictionaries to be ordered).
 if sys.version_info < (3, 7):
@@ -421,6 +422,95 @@ class Gemini_API(LLM_API):
       print(str(e))
       fail()
       return ""
+
+# An LLM API class for Anthropic's Claude API.
+class Claude_API(LLM_API):
+  name = "Claude"
+  model = "claude-sonnet-4-20250514"  # default model (can be overridden in run(..))
+
+  def __init__(self):
+    super().__init__()
+
+    # If ANTHROPIC_API_KEY env var does not exist, try ~/.anthropic/key.txt or prompt.
+    if not os.getenv("ANTHROPIC_API_KEY"):
+      key_file = os.path.expanduser("~/.anthropic/key.txt")
+      if os.path.exists(key_file):
+        with open(key_file) as file:
+          os.environ["ANTHROPIC_API_KEY"] = file.read().strip()
+      else:
+        os.environ["ANTHROPIC_API_KEY"] = input("Enter your Claude API key: ")
+
+    # Init Anthropic client.
+    self.client = anthropic.Anthropic()
+
+    # Get available models from API
+    try:
+      self.models = [m.id for m in self.client.models.list()]
+    except Exception as e:
+      print("Error retrieving Claude models from API:")
+      print(e)
+      self.models = []
+
+
+  def validateModel(self, model):
+    if model not in [m for m in self.models]:
+      print("Error: Model " + model + " not found.")
+      fail()
+
+  def initPrompt(self, api, system, message):
+    return [
+      {"role": apis[api]["system_role"], "content": system},
+      {"role": "user", "content": message}
+    ]
+
+  def run(self, messages, verilog, model=None):
+    if model is None:
+        model = self.model
+    self.validateModel(model)
+
+    get_message_bundler_for_model(model).add_verilog(messages, verilog)
+    api_props = apis[models[model]["api"]]
+
+    system_prompt = ""
+    claude_messages = []
+    for m in messages:
+        if m["role"] == "system":
+            system_prompt = m["content"]
+        else:
+            claude_messages.append({
+                "role": m["role"],
+                "content": m["content"]
+            })
+
+    max_tokens = api_props.get("max_output_tokens", 4096)
+    if max_tokens > 8000:
+        max_tokens = 8000
+
+    print("\nCalling " + model + "...")
+    try:
+        response = self.client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=claude_messages
+        )
+        print("Response received from " + model)
+
+        raw = response.content[0].text
+
+        # Remove ```json ... ``` wrapper if present
+        if raw.strip().startswith("```json"):
+            raw = raw.strip()
+            raw = raw[len("```json"):].strip()
+            if raw.endswith("```"):
+                raw = raw[:-3].strip()
+
+        return raw  
+
+    except Exception as e:
+        print("Error during Claude API call:")
+        print(e)
+        fail()
 
 
 # A message bundler that converts messages to and from the pseudo-Markdown format used in LLM messages.
@@ -1225,6 +1315,8 @@ def initialize_messages_json():
         llm_api = OpenAI_API()
       elif api.startswith("gemini"):
         llm_api = Gemini_API()
+      elif api == "claude":
+        llm_api = Claude_API()
       else:
         raise ValueError(f"Unknown or unsupported API type: {api}")
 
@@ -2010,6 +2102,7 @@ while True:
         # Load all models and APIs
         openai_api = OpenAI_API()
         gemini_api = Gemini_API()
+        claude_api = Claude_API()
         all_models = []
 
         for m in openai_api.models.data:
@@ -2019,6 +2112,9 @@ while True:
         for m in gemini_api.models:
             model_id = m.name.replace("models/", "")
             all_models.append((model_id, "Gemini"))
+
+        for m in claude_api.models:
+            all_models.append((m, "Claude"))
 
         # Filter if "m" pressed
         if key == "m":
@@ -2036,7 +2132,15 @@ while True:
             try:
                 choice = int(input("Enter model number: "))
                 model, vendor = all_models[choice]
-                llm_api = openai_api if vendor == "OpenAI" else gemini_api
+                if vendor == "OpenAI":
+                    llm_api = openai_api
+                elif vendor == "Gemini":
+                    llm_api = gemini_api
+                elif vendor == "Claude":
+                    llm_api = claude_api
+                else:
+                    print("Unknown vendor.")
+                    fail()
                 break
             except (ValueError, IndexError):
                 print("Invalid input. Try again.")

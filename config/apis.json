@@ -32,5 +32,11 @@
     "format": "json",
     "structured": false,
     "max_output_tokens": 2048
+  },
+  "claude": {
+    "system_role": "system",
+    "format": "json",
+    "structured": true,
+    "max_output_tokens": 4096
   }
 }
