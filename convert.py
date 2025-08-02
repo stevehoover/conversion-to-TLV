@@ -354,9 +354,8 @@ class Gemini_API(LLM_API):
 
     # Initialize the Gemini client
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    self.models = genai.list_models()
+    self.models = list(genai.list_models())
     self.model_ids = [m.name.replace("models/", "") for m in self.models]
-    print("Available Gemini models:", self.model_ids)
   
   def validateModel(self, model):
     # Check if model is in available models
@@ -1221,6 +1220,14 @@ def initialize_messages_json():
       status['api'] = api
       messages_json = "messages." + api + ".json"
 
+      # Dynamically create the correct LLM API instance
+      if api in ["gpt3", "gpt4", "openai", "o", "o-simple"]:
+        llm_api = OpenAI_API()
+      elif api.startswith("gemini"):
+        llm_api = Gemini_API()
+      else:
+        raise ValueError(f"Unknown or unsupported API type: {api}")
+
       # Read the system message from <repo>/default_system_message.txt.
       with open(repo_dir + "/default_system_message.txt") as file:
         system = file.read()
@@ -1693,14 +1700,17 @@ def print_prompt():
   print("  ")
   print("  Make edits and enter command characters until a candidate is accepted or rejected. Generally, the sequence is:")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + " and/or messages.<api>.json.")
-  print("    - l/L: (optional) Run the LLM step. (If this fails or is incomplete, make any further manual edits and try again.)")
+  print("    - l/L/m/M: (optional) Run the LLM step. (If this fails or is incomplete, make any further manual edits and try again.)")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + ". (You may use \"f\" to run FEV first.)")
   print("    - e/f: Run FEV (EQY/Yosys). (If this fails, make further manual Verilog edits and try again.).")
   print("    - y: Accept the current code as the completion of this refactoring step.")
   print("  (At any time: use \"n\" to undo changes; \"h\" for help; \"x\" to exit.)")
   print("  ")
   print("  Enter one of the following commands:")
-  print("    l/L/M: LLM. Send the current prompt to the LLM (o1-mini/gpt-4o/[M]odel-of-choice).")
+  print("    l: LLM. Run with the default fast model (o4-mini).")
+  print("    L: LLM. Run with the high-quality model (gpt-4o).")
+  print("    m: LLM. Choose a model from important (recommended) options only.")
+  print("    M: LLM. Choose a model from all available options.")
   print("    e/f/E: Run FEV (EQY/Yosys) on the current code (or [E]QY vs. original).")
   print("    y: Yes. Accept the current code as the completion of this refactoring step (if FEV already run and passed).")
   print("    u: Undo. Revert to a previous version of the code.")
@@ -1778,55 +1788,12 @@ def reset_prompt(type, prev_prompt_id):
 # The various LLM APIs we support and their properties.
 # In addition to use by this script, these properties are stringified and passed via M5 to
 # default_system_messages.txt.
-apis = {
-  "gpt3":
-      { "system_role": "system",
-        "format": "json",
-        "structured": False,
-        "max_output_tokens": 4096,
-      },
-  "gpt4":
-      { "system_role": "system",
-        "format": "json",
-        "structured": False,
-        "max_output_tokens": 4096,
-      },
-  "o-simple":
-      { "system_role": "user",
-        "format": "md",
-        "structured": False,
-      },
-  "o":
-      { "system_role": "developer",
-        "format": "json",
-        "structured": True,
-      },
-  "gemini":
-      { "system_role": "user",
-        "format": "json",
-        "structured": True,
-        "max_output_tokens": 4096,
-      },
-  "gemini-flash":
-      { "system_role": "user", 
-        "format": "json",
-        "structured": False,
-        "max_output_tokens": 2048,
-      }
-}
-models = {
-  "gpt-3.5-turbo": {"api": "gpt3"},
-  "gpt-4-turbo": {"api": "gpt4"},
-  "o1-mini": {"api": "o-simple"},
-  "o1-preview": {"api": "o-simple"},
-  "o1": {"api": "o"},
-  "o3-mini": {"api": "o"},
-  "gpt-4o": {"api": "o"},
-  "gpt-4o-mini": {"api": "o"},
-  "gemini-2.5-pro-exp-03-25": {"api": "gemini"},
-  "gemini-2.0-flash": {"api": "gemini-flash"},
-}
-
+with open("config/apis.json") as f:
+    apis = json.load(f)
+with open("config/models.json") as f:
+    model_data = json.load(f)
+    models = model_data["models"]
+    important_models = model_data["important"]
 
 # The JSON schema for the LLM API, which is passed, e.g.:
 json_schema = {
@@ -1854,19 +1821,6 @@ status_fields = {"by", "api", "compile", "fev", "modified", "incomplete", "accep
 llm_status_fields = {"incomplete", "plan"}   # These are empty for a refactoring step and updated by LLM runs.
 # (Fields not listed above are sticky.)
 
-# Ask the user which API to use
-def choose_api_provider():
-  print("\nSelect the API provider to use:")
-  print("[1] OpenAI")
-  print("[2] Google Gemini")
-  choice = prompt_user("Enter your choice:", ["1", "2"], "1")
-  
-  if choice == "1":
-    return OpenAI_API()
-  else:
-    return Gemini_API()
-
-llm_api = choose_api_provider()
 
 # TODO: It looks like all models support JSON output, and we can eliminate support for "md" responses.
 message_bundler = {
@@ -2038,56 +1992,55 @@ while True:
   while True:
     # Get the user's command as a single key press (without <Enter>) using pynput library.
     # TODO: Replay get_command(..) in favor of prompt_user(..).
-    key = get_command(["l", "L", "M", "e", "f", "E", "y", "u", "U", "c", "p", "h", "?", "x"])
+    key = get_command(["l", "L", "m", "M", "e", "f", "E", "y", "u", "U", "c", "p", "h", "?", "x"])
 
     # Process the user's command.
-    if key == "l" or key == "L" or key == "M":
+    if key == "l" or key == "L" or key == "m" or key == "M":
       # Determine model.
       model = None
       if key == "l":
-        # Use appropriate default model based on API type
-        model = "o1-mini" if isinstance(llm_api, OpenAI_API) else "gemini-2.0-flash"
+        # Use appropriate default model 
+        model = "o4-mini" 
+        llm_api = OpenAI_API()
       elif key == "L":
-        # Use appropriate high-quality model based on API type
-        model = "gpt-4o" if isinstance(llm_api, OpenAI_API) else "gemini-2.5-pro-exp-03-25"
-      elif key == "M":
-        # Print a list of models by number, and let the user choose one.
-        print("Choose a model:")
-        # Handle different model listing formats for different APIs
-        if isinstance(llm_api, OpenAI_API):
-          model_list = [item.id for item in llm_api.models.data if hasattr(item, 'id')]
-        else:  # Gemini_API
-          model_list = llm_api.model_ids
+        # Use appropriate high-quality model 
+        model = "gpt-4o" 
+        llm_api = OpenAI_API()
+      elif key in {"M", "m"}:
+        # Load all models and APIs
+        openai_api = OpenAI_API()
+        gemini_api = Gemini_API()
+        all_models = []
+
+        for m in openai_api.models.data:
+            if hasattr(m, 'id'):
+                all_models.append((m.id, "OpenAI"))
+
+        for m in gemini_api.models:
+            model_id = m.name.replace("models/", "")
+            all_models.append((model_id, "Gemini"))
+
+        # Filter if "m" pressed
+        if key == "m":
+            all_models = [(name, vendor) for name, vendor in all_models if name in important_models]
+
+        # Display
+        vendors_present = set(vendor for _, vendor in all_models)
+        print("Available vendors:", ", ".join(sorted(vendors_present)))
         
-        model_display_list = []
-        for i, model_name in enumerate(model_list):
-          if i >= 52:  # Limit to a-z + A-Z
-            break
-          # Use letters for the models (a-zA-Z), so we can represent them in a single character.
-          ch = chr(ord('a') + i) if i < 26 else chr(ord('A') + i - 26)
-          supported_char = "*" if models.get(model_name) != None else " "
-          print(f" {supported_char}{ch}: {model_name}")
-          if supported_char == "*":
-            model_display_list.append(model_name)
-        
+        print("\nAvailable Models:")
+        for i, (name, vendor) in enumerate(all_models):
+            print(f"  {i}:  ({vendor}) {name}")
+
         while True:
-          model_char = prompt_user("Enter the model letter.")
-          o = ord(model_char)
-          model_num = -1
-          if o >= ord('a') and o <= ord('z'):
-            model_num = o - ord('a')
-          elif o >= ord('A') and o <= ord('Z'):
-            model_num = o - ord('A') + 26
-          
-          if model_num < 0 or model_num >= len(model_display_list):
-            print("\nInvalid model ID. Choose again.")
-          else:
-            model = model_display_list[model_num]
-            if models.get(model) == None:
-              print("\nError: Unsupported model.")
-              print("\nChoose a different one.")
-            else:
-              break
+            try:
+                choice = int(input("Enter model number: "))
+                model, vendor = all_models[choice]
+                llm_api = openai_api if vendor == "OpenAI" else gemini_api
+                break
+            except (ValueError, IndexError):
+                print("Invalid input. Try again.")
+
       else:
         print("Bug: Invalid model.")
         fail()
@@ -2119,7 +2072,8 @@ while True:
             #with open("tmp/messages_debug.json", "w") as file:
             #  file.write(msg_json)
             messages = json.loads(msg_json)
-            # Normalize 'parts' → 'content' for all messages
+            # Convert Gemini-style messages (with "parts") to OpenAI-style format (with "content"),
+            # to ensure compatibility across API providers.
             for m in messages:
                 if "parts" in m and "content" not in m:
                     m["content"] = "".join(m["parts"])  # assumes parts is a list of strings
