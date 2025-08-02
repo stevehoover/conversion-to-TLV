@@ -1,0 +1,42 @@
+{
+  "gpt3": {
+    "system_role": "system",
+    "format": "json",
+    "structured": false,
+    "max_output_tokens": 4096
+  },
+  "gpt4": {
+    "system_role": "system",
+    "format": "json",
+    "structured": false,
+    "max_output_tokens": 4096
+  },
+  "o-simple": {
+    "system_role": "user",
+    "format": "md",
+    "structured": false
+  },
+  "o": {
+    "system_role": "developer",
+    "format": "json",
+    "structured": true
+  },
+  "gemini": {
+    "system_role": "user",
+    "format": "json",
+    "structured": true,
+    "max_output_tokens": 4096
+  },
+  "gemini-flash": {
+    "system_role": "user",
+    "format": "json",
+    "structured": false,
+    "max_output_tokens": 2048
+  },
+  "claude": {
+    "system_role": "system",
+    "format": "json",
+    "structured": true,
+    "max_output_tokens": 4096
+  }
+}
