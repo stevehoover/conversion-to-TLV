@@ -35,6 +35,15 @@ This flow chart illustrates the conversion process provided by `convert.py`. It 
 
 The initial script is in place for the Verilog conversion steps.
 
+## Multi-Model LLM Support
+
+The tool supports multiple LLM providers—OpenAI, Gemini, and Claude (Anthropic)—to enable flexible testing and experimentation across a wide range of models.
+To streamline configuration, a `config/` directory organizes API and model information:
+- `apis.json` defines supported APIs and their response formats.
+- `models.json` lists all available models and highlights a curated subset for quicker access.
+
+Within the interface, users can list all models or filter to just the important ones for easier navigation.
+
 ## Contributing
 
 ### Getting Started
@@ -83,6 +92,27 @@ So, where do we keep all this training data. Here are the current thoughts:
 ## API Key Generation for Gemini
 
 You can obtain the free API key for Google Gemini via [AI Studio](https://aistudio.google.com/prompts/new_chat) by logging in or creating an account, then navigating to "Get API Key," reviewing the terms, and generating your key. Keep in mind that the free-tier key has rate limitations, so for higher usage, you may need to upgrade to a paid plan.
+
+## API Key Setup
+
+To use any of the supported LLM APIs (OpenAI, Google Gemini, or Anthropic Claude), you must provide an API key. The tool supports multiple ways of setting these keys:
+1. Environment Variable
+   
+   Set the appropriate environment variable in your shell:
+   ```bash
+   export OPENAI_API_KEY=your-openai-key
+   export GEMINI_API_KEY=your-gemini-key
+   export ANTHROPIC_API_KEY=your-claude-key
+   ```
+2. Key File (Fallback Option)
+   
+   If the environment variable is not set, the tool will try to read the key from a local file:
+   - OpenAI: `~/.openai/key.txt`
+   - Gemini: `~/.google/key.txt`
+   - Claude (Anthropic): `~/.anthropic/key.txt`
+3. Interactive Prompt
+   
+   If neither an environment variable nor key file is found, the script will prompt you to enter the key manually at runtime.
 
 ## Windows Support (WSL)
 
