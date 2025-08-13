@@ -11,6 +11,30 @@
     "structured": false,
     "max_output_tokens": 4096
   },
+  "gpt5": {
+    "system_role": "system",
+    "format": "json",
+    "structured": false,
+    "max_output_tokens": 4096
+  },
+  "gpt5-mini": {
+    "system_role": "system",
+    "format": "json",
+    "structured": false,
+    "max_output_tokens": 4096
+  },
+  "gpt5-nano": {
+    "system_role": "system",
+    "format": "json",
+    "structured": false,
+    "max_output_tokens": 2048
+  },
+  "gpt5-chat-latest": {
+    "system_role": "system",
+    "format": "json",
+    "structured": false,
+    "max_output_tokens": 4096
+  },
   "o-simple": {
     "system_role": "user",
     "format": "md",

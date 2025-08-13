@@ -1311,7 +1311,7 @@ def initialize_messages_json():
       messages_json = "messages." + api + ".json"
 
       # Dynamically create the correct LLM API instance
-      if api in ["gpt3", "gpt4", "openai", "o", "o-simple"]:
+      if api.startswith(("gpt3", "gpt4", "gpt5", "o", "o-simple")):
         llm_api = OpenAI_API()
       elif api.startswith("gemini"):
         llm_api = Gemini_API()
