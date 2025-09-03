@@ -104,18 +104,22 @@ import atexit
 import signal
 from select import select
 from abc import ABC, abstractmethod
+from dotenv import load_dotenv
 import json
 import re
 import shutil
 import stat
 import copy
+import google.generativeai as genai
+import anthropic
 
 # Confirm that we're using Python 3.7 or later (as we rely on dictionaries to be ordered).
 if sys.version_info < (3, 7):
   print("Error: This script requires Python 3.7 or later.")
   sys.exit(1)
 
-
+# Load environment variables from .env file.
+load_dotenv()
 
 
 #############
@@ -331,6 +335,182 @@ class OpenAI_API(LLM_API):
       fail()
     return response_str
 
+
+# An LLM API class for Google's Gemini API
+class Gemini_API(LLM_API):
+  name = "Gemini"
+  model = "gemini-2.5-pro-exp-03-25"  # default model (can be overridden in run(..))
+
+  def __init__(self):
+    super().__init__()
+
+    # if GOOGLE_API_KEY env var does not exist, get it from ~/.google/key.txt or input prompt.
+    if not os.getenv("GOOGLE_API_KEY"):
+      key_file_name = os.path.expanduser("~/.google/key.txt")
+      if os.path.exists(key_file_name):
+        with open(key_file_name) as file:
+          os.environ["GOOGLE_API_KEY"] = file.read()
+      else:
+        os.environ["GOOGLE_API_KEY"] = input("Enter your Google API key: ")
+
+    # Initialize the Gemini client
+    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+    self.models = list(genai.list_models())
+    self.model_ids = [m.name.replace("models/", "") for m in self.models]
+  
+  def validateModel(self, model):
+    # Check if model is in available models
+    if model not in self.model_ids:
+      print(f"Error: Model {model} not found in available Gemini models.")
+      fail()
+
+  # Set up the initial messages object for the current refactoring step based on the given system message and message parameter.
+  def initPrompt(self, api, system, message):
+    # For Gemini, we format differently than OpenAI
+    return [
+      {"role": "user", "parts": [system + "\n\n" + message]}
+    ]
+
+  # Run the LLM API on the messages, returning the response string from the LLM.
+  def run(self, messages, verilog, model=None):
+    if model == None:
+      model = self.model
+    self.validateModel(model)
+    
+    # Add verilog to the last message.
+    get_message_bundler_for_model(model).add_verilog(messages, verilog)
+    api_properties = apis[models[model]["api"]]
+    
+    print(f"\nCalling {model}...")
+    
+    try:
+      # Convert OpenAI format messages to Gemini format
+      gemini_messages = []
+      for msg in messages:
+        if msg["role"] == "system":
+            gemini_messages.append({"role": "system", "parts": [msg["content"]]})
+        elif msg["role"] == "user":
+            gemini_messages.append({"role": "user", "parts": [msg["content"]]})
+        else:
+            gemini_messages.append({"role": "model", "parts": [msg["content"]]})
+      
+      # Create Gemini model with appropriate parameters
+      generation_config = {
+        "temperature": 0.0,
+        "response_mime_type": "text/plain"
+      }
+      
+      if api_properties["format"] == "json":
+        generation_config["response_mime_type"] = "application/json"
+      
+      # Call the Gemini API
+      model_instance = genai.GenerativeModel(
+        model_name=model,
+        generation_config=generation_config
+      )
+      
+      response = model_instance.generate_content(gemini_messages)
+      response_str = response.text
+      
+      print(f"Response received from {model}")
+      print(f"API response length: {len(response_str)}")
+      
+      return response_str
+      
+    except Exception as e:
+      print("Error: API response is invalid.")
+      print(str(e))
+      fail()
+      return ""
+
+# An LLM API class for Anthropic's Claude API.
+class Claude_API(LLM_API):
+  name = "Claude"
+  model = "claude-sonnet-4-20250514"  # default model (can be overridden in run(..))
+
+  def __init__(self):
+    super().__init__()
+
+    # If ANTHROPIC_API_KEY env var does not exist, try ~/.anthropic/key.txt or prompt.
+    if not os.getenv("ANTHROPIC_API_KEY"):
+      key_file = os.path.expanduser("~/.anthropic/key.txt")
+      if os.path.exists(key_file):
+        with open(key_file) as file:
+          os.environ["ANTHROPIC_API_KEY"] = file.read().strip()
+      else:
+        os.environ["ANTHROPIC_API_KEY"] = input("Enter your Claude API key: ")
+
+    # Init Anthropic client.
+    self.client = anthropic.Anthropic()
+
+    # Get available models from API
+    try:
+      self.models = [m.id for m in self.client.models.list()]
+    except Exception as e:
+      print("Error retrieving Claude models from API:")
+      print(e)
+      self.models = []
+
+
+  def validateModel(self, model):
+    if model not in [m for m in self.models]:
+      print("Error: Model " + model + " not found.")
+      fail()
+
+  def initPrompt(self, api, system, message):
+    return [
+      {"role": apis[api]["system_role"], "content": system},
+      {"role": "user", "content": message}
+    ]
+
+  def run(self, messages, verilog, model=None):
+    if model is None:
+        model = self.model
+    self.validateModel(model)
+
+    get_message_bundler_for_model(model).add_verilog(messages, verilog)
+    api_props = apis[models[model]["api"]]
+
+    system_prompt = ""
+    claude_messages = []
+    for m in messages:
+        if m["role"] == "system":
+            system_prompt = m["content"]
+        else:
+            claude_messages.append({
+                "role": m["role"],
+                "content": m["content"]
+            })
+
+    max_tokens = api_props.get("max_output_tokens", 4096)
+    if max_tokens > 8000:
+        max_tokens = 8000
+
+    print("\nCalling " + model + "...")
+    try:
+        response = self.client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=claude_messages
+        )
+        print("Response received from " + model)
+
+        raw = response.content[0].text
+
+        # Remove ```json ... ``` wrapper if present
+        if raw.strip().startswith("```json"):
+            raw = raw.strip()
+            raw = raw[len("```json"):].strip()
+            if raw.endswith("```"):
+                raw = raw[:-3].strip()
+
+        return raw  
+
+    except Exception as e:
+        print("Error during Claude API call:")
+        print(e)
+        fail()
 
 
 # A message bundler that converts messages to and from the pseudo-Markdown format used in LLM messages.
@@ -1130,6 +1310,16 @@ def initialize_messages_json():
       status['api'] = api
       messages_json = "messages." + api + ".json"
 
+      # Dynamically create the correct LLM API instance
+      if api.startswith(("gpt3", "gpt4", "gpt5", "o", "o-simple")):
+        llm_api = OpenAI_API()
+      elif api.startswith("gemini"):
+        llm_api = Gemini_API()
+      elif api == "claude":
+        llm_api = Claude_API()
+      else:
+        raise ValueError(f"Unknown or unsupported API type: {api}")
+
       # Read the system message from <repo>/default_system_message.txt.
       with open(repo_dir + "/default_system_message.txt") as file:
         system = file.read()
@@ -1602,14 +1792,17 @@ def print_prompt():
   print("  ")
   print("  Make edits and enter command characters until a candidate is accepted or rejected. Generally, the sequence is:")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + " and/or messages.<api>.json.")
-  print("    - l/L: (optional) Run the LLM step. (If this fails or is incomplete, make any further manual edits and try again.)")
+  print("    - l/L/m/M: (optional) Run the LLM step. (If this fails or is incomplete, make any further manual edits and try again.)")
   print("    - (optional) Make any desired manual edits to " + working_verilog_file_name + ". (You may use \"f\" to run FEV first.)")
   print("    - e/f: Run FEV (EQY/Yosys). (If this fails, make further manual Verilog edits and try again.).")
   print("    - y: Accept the current code as the completion of this refactoring step.")
   print("  (At any time: use \"n\" to undo changes; \"h\" for help; \"x\" to exit.)")
   print("  ")
   print("  Enter one of the following commands:")
-  print("    l/L/M: LLM. Send the current prompt to the LLM (o1-mini/gpt-4o/[M]odel-of-choice).")
+  print("    l: LLM. Run with the default fast model (o4-mini).")
+  print("    L: LLM. Run with the high-quality model (gpt-4o).")
+  print("    m: LLM. Choose a model from important (recommended) options only.")
+  print("    M: LLM. Choose a model from all available options.")
   print("    e/f/E: Run FEV (EQY/Yosys) on the current code (or [E]QY vs. original).")
   print("    y: Yes. Accept the current code as the completion of this refactoring step (if FEV already run and passed).")
   print("    u: Undo. Revert to a previous version of the code.")
@@ -1687,41 +1880,12 @@ def reset_prompt(type, prev_prompt_id):
 # The various LLM APIs we support and their properties.
 # In addition to use by this script, these properties are stringified and passed via M5 to
 # default_system_messages.txt.
-apis = {
-  "gpt3":
-      { "system_role": "system",
-        "format": "json",
-        "structured": False,
-        "max_output_tokens": 4096,
-      },
-  "gpt4":
-      { "system_role": "system",
-        "format": "json",
-        "structured": False,
-        "max_output_tokens": 4096,
-      },
-  "o-simple":
-      { "system_role": "user",
-        "format": "md",
-        "structured": False,
-      },
-  "o":
-      { "system_role": "developer",
-        "format": "json",
-        "structured": True,
-      },
-}
-models = {
-  "gpt-3.5-turbo": {"api": "gpt3"},
-  "gpt-4-turbo": {"api": "gpt4"},
-  "o1-mini": {"api": "o-simple"},
-  "o1-preview": {"api": "o-simple"},
-  "o1": {"api": "o"},
-  "o3-mini": {"api": "o"},
-  "gpt-4o": {"api": "o"},
-  "gpt-4o-mini": {"api": "o"},
-}
-
+with open("config/apis.json") as f:
+    apis = json.load(f)
+with open("config/models.json") as f:
+    model_data = json.load(f)
+    models = model_data["models"]
+    important_models = model_data["important"]
 
 # The JSON schema for the LLM API, which is passed, e.g.:
 json_schema = {
@@ -1749,9 +1913,6 @@ status_fields = {"by", "api", "compile", "fev", "modified", "incomplete", "accep
 llm_status_fields = {"incomplete", "plan"}   # These are empty for a refactoring step and updated by LLM runs.
 # (Fields not listed above are sticky.)
 
-# TODO: We've overloaded the term "API". Change to "API Vendor"?
-# TODO: This should be dynamic, so we should look it up based on the chosen API.
-llm_api = OpenAI_API()
 
 # TODO: It looks like all models support JSON output, and we can eliminate support for "md" responses.
 message_bundler = {
@@ -1923,45 +2084,70 @@ while True:
   while True:
     # Get the user's command as a single key press (without <Enter>) using pynput library.
     # TODO: Replay get_command(..) in favor of prompt_user(..).
-    key = get_command(["l", "L", "M", "e", "f", "E", "y", "u", "U", "c", "p", "h", "?", "x"])
+    key = get_command(["l", "L", "m", "M", "e", "f", "E", "y", "u", "U", "c", "p", "h", "?", "x"])
 
     # Process the user's command.
-    if key == "l" or key == "L" or key == "M":
+    if key == "l" or key == "L" or key == "m" or key == "M":
       # Determine model.
       model = None
       if key == "l":
-        model = "o1-mini"
+        # Use appropriate default model 
+        model = "o4-mini" 
+        llm_api = OpenAI_API()
       elif key == "L":
-        model = "gpt-4o"
-      elif key == "M":
-        # Print a list of models by number, and let the user choose one.
-        print("Choose a model:")
-        for i in range(len(llm_api.models.data)):
-          if hasattr(llm_api.models.data[i], 'id'):
-            # Use letters for the models (a-zA-Z), so we can represent them in a single character.
-            ch = chr(ord('a') + i) if i < 26 else chr(ord('A') + i - 26)
-            supported_char = "*" if models.get(llm_api.models.data[i].id) != None else " "
-            print(f" {supported_char}{ch}: {llm_api.models.data[i].id}")
+        # Use appropriate high-quality model 
+        model = "gpt-4o" 
+        llm_api = OpenAI_API()
+      elif key in {"M", "m"}:
+        # Load all models and APIs
+        openai_api = OpenAI_API()
+        gemini_api = Gemini_API()
+        claude_api = Claude_API()
+        all_models = []
+
+        for m in openai_api.models.data:
+            if hasattr(m, 'id'):
+                all_models.append((m.id, "OpenAI"))
+
+        for m in gemini_api.models:
+            model_id = m.name.replace("models/", "")
+            all_models.append((model_id, "Gemini"))
+
+        for m in claude_api.models:
+            all_models.append((m, "Claude"))
+
+        # Filter if "m" pressed
+        if key == "m":
+            all_models = [(name, vendor) for name, vendor in all_models if name in important_models]
+
+        # Display
+        vendors_present = set(vendor for _, vendor in all_models)
+        print("Available vendors:", ", ".join(sorted(vendors_present)))
+        
+        print("\nAvailable Models:")
+        for i, (name, vendor) in enumerate(all_models):
+            print(f"  {i}:  ({vendor}) {name}")
+
         while True:
-          model_char = prompt_user("Enter the model letter.")
-          o = ord(model_char)
-          model_num = -1
-          if o >= ord('a') and o <= ord('z'):
-            model_num = o - ord('a')
-          elif o >= ord('A') and o <= ord('Z'):
-            model_num = o - ord('A') + 26
-          if model_num < 0 or model_num >= len(llm_api.models.data) or not hasattr(llm_api.models.data[i], 'id'):
-            print("\nInvalid model ID. Choose again.")
-          else:
-            model = llm_api.models.data[model_num].id
-            if models.get(model) == None:
-              print("\nError: Unsupported model.")
-              print("\nChoose a different one.")
-            break
+            try:
+                choice = int(input("Enter model number: "))
+                model, vendor = all_models[choice]
+                if vendor == "OpenAI":
+                    llm_api = openai_api
+                elif vendor == "Gemini":
+                    llm_api = gemini_api
+                elif vendor == "Claude":
+                    llm_api = claude_api
+                else:
+                    print("Unknown vendor.")
+                    fail()
+                break
+            except (ValueError, IndexError):
+                print("Invalid input. Try again.")
+
       else:
         print("Bug: Invalid model.")
         fail()
-
 
       # Determine the API
       api = models[model]["api"]
@@ -1990,6 +2176,12 @@ while True:
             #with open("tmp/messages_debug.json", "w") as file:
             #  file.write(msg_json)
             messages = json.loads(msg_json)
+            # Convert Gemini-style messages (with "parts") to OpenAI-style format (with "content"),
+            # to ensure compatibility across API providers.
+            for m in messages:
+                if "parts" in m and "content" not in m:
+                    m["content"] = "".join(m["parts"])  # assumes parts is a list of strings
+                    del m["parts"]
             # Add "plan" field if given.
             status = readStatus()
             if "plan" in status:

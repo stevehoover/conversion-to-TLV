@@ -1,2 +1,16 @@
 /fev_prove
 /.venv/
+
+# These should be scrubbed.
+SymbiYosys/
+yosys/
+fev
+venv
+.env*
+tmp
+history
+current
+messages*
+current
+*.v
+*.sv

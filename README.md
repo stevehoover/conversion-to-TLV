@@ -39,6 +39,15 @@ This flow chart illustrates the conversion process provided by `convert.py`. It 
 
 The initial script is in place for the Verilog conversion steps.
 
+## Multi-Model LLM Support
+
+The tool supports multiple LLM providers—OpenAI, Gemini, and Claude (Anthropic)—to enable flexible testing and experimentation across a wide range of models.
+To streamline configuration, a `config/` directory organizes API and model information:
+- `apis.json` defines supported APIs and their response formats.
+- `models.json` lists all available models and highlights a curated subset for quicker access.
+
+Within the interface, users can list all models or filter to just the important ones for easier navigation.
+
 ## Contributing
 
 ### Getting Started
@@ -55,6 +64,15 @@ Here are a few ideas to prepare for contributing:
 ### Do Some Conversions
 
 The intent is improve LLMs' ability to convert Verilog to TL-Verilog. We teach it through prompts. We convert. The conversion process captures what we've done. LLMs can train on this to become more savvy. Initially, there will be a lot of human guidance. Over time the LLMs become more capable.
+
+## Conversion Examples
+
+### By sharma-sugurthi
+Repository: [TL-Verilog Conversion Examples](https://github.com/sharma-sugurthi/conversion-to-TLV)
+- Basic circuits (D flip-flop, counter, 2-to-1 mux)
+- Intermediate designs (shift register, traffic light controller)
+- Sequence detector with state machine
+- Detailed conversion steps and tutorials
 
 So, where do we keep all this training data. Here are the current thoughts:
   - Fork this repo.
@@ -74,3 +92,59 @@ So, where do we keep all this training data. Here are the current thoughts:
   - cv32e40p
 - Verilog libraries (These will be more difficult due to parameterization.)
   - BaseJump STL
+
+## API Key Generation for Gemini
+
+You can obtain the free API key for Google Gemini via [AI Studio](https://aistudio.google.com/prompts/new_chat) by logging in or creating an account, then navigating to "Get API Key," reviewing the terms, and generating your key. Keep in mind that the free-tier key has rate limitations, so for higher usage, you may need to upgrade to a paid plan.
+
+## API Key Setup
+
+To use any of the supported LLM APIs (OpenAI, Google Gemini, or Anthropic Claude), you must provide an API key. The tool supports multiple ways of setting these keys:
+1. Environment Variable
+   
+   Set the appropriate environment variable in your shell:
+   ```bash
+   export OPENAI_API_KEY=your-openai-key
+   export GEMINI_API_KEY=your-gemini-key
+   export ANTHROPIC_API_KEY=your-claude-key
+   ```
+2. Key File (Fallback Option)
+   
+   If the environment variable is not set, the tool will try to read the key from a local file:
+   - OpenAI: `~/.openai/key.txt`
+   - Gemini: `~/.google/key.txt`
+   - Claude (Anthropic): `~/.anthropic/key.txt`
+3. Interactive Prompt
+   
+   If neither an environment variable nor key file is found, the script will prompt you to enter the key manually at runtime.
+
+## Windows Support (WSL)
+
+If you're using Windows, you can run the `convert.py` script via Windows Subsystem for Linux (WSL). Follow the instructions below to set it up:
+1. **Install WSL**
+   - Open the start menu and search for "Turn Windows features on or off".
+   - Enable "Virtual Machine Platform" and "Windows Subsystem for Linux".
+   - Save your work and restart the computer to apply the changes.
+   - A new empty folder named "Linux" will be created in the file explorer.
+   - Open Command Prompt (cmd) and update WSL by running:
+     ```bash
+     wsl --update
+     ```
+   - Verify the installation by checking the version:
+     ```bash
+     wsl --version
+     ```
+   - Repeat the update steps until you see:
+     "The most recent version of Windows Subsystem for Linux is already installed."
+2. **Install Ubuntu**
+   - List available Linux distributions:
+     ```bash
+     wsl --list --online
+     ```
+   - Choose a distribution (e.g., Ubuntu-22.04) and install it:
+     ```bash
+     wsl --install --d Ubuntu-22.04
+     ```
+   - Enter new UNIX username and password and the operation will be completed successfully.
+  
+For a visual guide, check out this [installation tutorial](https://youtu.be/gTf32sX9ci0?si=YiCRS6dEqilfIrEv).

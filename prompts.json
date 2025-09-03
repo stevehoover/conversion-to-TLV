@@ -1,5 +1,6 @@
 [{
-"desc": "Initial code"
+"desc": "Initial code",
+"prompt": ""
 }, {
 "desc": "Three-space indentation",
 "prompt": "Each level of code scope in TL-Verilog is indented exactly three spaces. Tabs are not permitted. Update the line indentation to conform to this standard of three spaces of indentation and no tabs for its Verilog scopes, such as within `begin`/`end`.
