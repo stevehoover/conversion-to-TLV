@@ -17,7 +17,7 @@ class TLVerilogAssistant:
             model="gpt-4o",
             instructions=(
                 "Converts Transaction-Level Verilog (TL-Verilog) hardware description language code into SystemVerilog code "
-                "using Redwood EDA, LLC's SandPiper(TM) tool. The assistant uses a tool that receives a TL-Verilog source file "
+                "using Redwood EDA, LLC's SandPiper™ tool. The assistant uses a tool that receives a TL-Verilog source file "
                 "as input and produces a SystemVerilog file as output. If an error occurs, STDERR output is returned. "
                 "Warnings and informational messages may also be present in STDERR even if the conversion is successful."
             ),
@@ -27,7 +27,7 @@ class TLVerilogAssistant:
                     "function": {
                         "name": "convert_tl_verilog",
                         "description": (
-                            "Uses Redwood EDA, LLC's SandPiper(TM) tool to convert a TL-Verilog file into SystemVerilog. "
+                            "Uses Redwood EDA, LLC's SandPiper™ tool to convert a TL-Verilog file into SystemVerilog. "
                             "The response includes 'systemverilog' containing the generated SystemVerilog code (if successful) "
                             "and 'stderr' containing any warnings, informational messages, or error messages from the conversion process."
                         ),

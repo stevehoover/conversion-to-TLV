@@ -3,9 +3,49 @@
 # Exit on any error
 set -e
 
+# cd to <repo_root>
+cd "$(dirname "$0")"
+
+
+# Make sure .venv is activated; if not, activate it and provide use instructions
+# Test whether .venv/bin/activate has been done.
+pip3 install --upgrade pip
+if [ "$VIRTUAL_ENV" != "$(pwd)/.venv" ]; then
+    if [ ! -d ".venv" ]; then
+        python3 -m venv .venv
+        echo "Created Python .venv"
+    fi
+    . .venv/bin/activate
+    echo
+    echo "============================================="
+    echo "To use this repo, first activate it with:"
+    echo "    . .venv/bin/activate"
+    echo "============================================="
+    echo
+fi
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+
+
 # Function to check if a command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# Function to check Python version compatibility
+check_python_version() {
+    PYTHON_VERSION=$(python3 --version 2>&1 | grep -o '[0-9]\+\.[0-9]\+' | head -n1)
+    MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+    MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+    
+    if [ "$MAJOR" -lt 3 ] || ([ "$MAJOR" -eq 3 ] && [ "$MINOR" -lt 9 ]); then
+        echo "⚠️  WARNING: Python $PYTHON_VERSION detected"
+        echo "   SymbiYosys requires Python 3.9+ for modern type hints"
+        echo "   You may encounter 'TypeError: type object is not subscriptable'"
+        echo "   Consider upgrading Python or patching SymbiYosys after installation"
+    fi
 }
 
 # Function to install system dependencies
@@ -27,13 +67,6 @@ install_system_deps() {
     fi
 }
 
-# Function to install Python dependencies
-install_python_deps() {
-    echo "🐍 Installing Python dependencies..."
-    pip3 install --upgrade pip
-    pip3 install pynput openai
-}
-
 # Function to install Yosys
 install_yosys() {
     echo "🔧 Installing Yosys..."
@@ -45,6 +78,7 @@ install_yosys() {
     # Clone and build Yosys
     git clone https://github.com/YosysHQ/yosys.git
     cd yosys
+    git submodule update --init --recursive
     make config-gcc
     make -j$(nproc)
     sudo make install
@@ -94,9 +128,11 @@ install_eqy() {
 # Main installation process
 echo "🚀 Starting installation process..."
 
+# Check Python version compatibility first
+check_python_version
+
 # Install dependencies
 install_system_deps
-install_python_deps
 
 # Install EDA tools
 install_yosys
@@ -105,6 +141,6 @@ install_eqy
 
 echo "✅ Installation complete! The following tools are now available:"
 echo "  - Yosys: $(yosys --version)"
-echo "  - SymbiYosys: $(sby --version)"
-echo "  - EQY: $(eqy --version)"
+echo "  - SymbiYosys"
+echo "  - EQY"
 echo "  - Python packages: pynput, openai"

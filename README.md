@@ -1,5 +1,9 @@
 # Semi-automated Conversion from Verilog to TL-Verilog Using LLMs
 
+## Setup
+
+In a Ubuntu or MacOS system, clone, `cd` into repo, and run `./init`, which will install tools in your system using `sudo`. (TODO: This process needs updates for newer `venv` requirements.)
+
 ## Goal
 
 To use LLMs and TL-Verilog to improve all existing Verilog by reducing its size, improving its maintainability, making it more configurable, and identifying bugs? How could we possibly do all that? Transaction-Level Verilog (TL-Verilog) models are smaller, cleaner, and less bug-prone than their Verilog counterparts. But there's not much TL-Verilog in the wild yet. Advancements in AI make it feasible to automate the process of converting existing Verilog models to TL-Verilog.
@@ -10,7 +14,7 @@ If you ask ChatGPT to convert your code today, you won't be happy with the resul
 
 We aim to use existing LLMs, primarily various versions of ChatGPT via its API. We do not intend to tune a custom LLM (though that might be an option). The LLM will be trained through the conversation, primarily using "system messages".
 
-A command-line Python script (`convert.py`) controls the interactions with the LLM. The script uses a recipe for conversion that includes numerous incremental conversion steps. The bulk of the process is refactoring Verilog to a form that looks similar to the (System)Verilog that would be produce by Redwood EDA's SandPiper(TM) tool. Each step:
+A command-line Python script (`convert.py`) controls the interactions with the LLM. The script uses a recipe for conversion that includes numerous incremental conversion steps. The bulk of the process is refactoring Verilog to a form that looks similar to the (System)Verilog that would be produce by Redwood EDA's SandPiper™ tool. Each step:
 
 - Provides the LLM with a "system message" that defines the nature of the conversion process and how to approach each step. (See `default_system_messages.txt`).
 - Provide the prompt for the step and invoke the LLM to do all or part of the step.

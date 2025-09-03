@@ -658,7 +658,7 @@
 },{
 "desc": "Embed declarations in assignments",
 "prompt":
-"`logic` signal declarations may be follow by an assignment. Combine declarations and assignments. For example:
+"`logic` signal declarations may be followed by an assignment. Combine declarations and assignments. For example:
 +
 +```verilog
 +logic y;
