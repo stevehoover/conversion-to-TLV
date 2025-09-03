@@ -536,50 +536,6 @@ class PseudoMarkdownMessageBundler(MessageBundler):
       separator = "\n\n"
     return content
 
-  """
-  # TODO: Maybe this notion of sections should be replaced with an option for responses to
-  # use "\n...\n" to omit portions of code. Yes... do this!
-  #
-  # Split a Verilog file into sections delimited by "// LLM: [Omitted ]Section: <name>"
-  # (as described in default_system_message.txt).
-  # body: The Verilog code from a "verilog" field of an LLM request or response.
-  # response: A boolean indicating whether the body is a response (vs. request).
-  def split_sections(self, body, response):
-    # Match sections, delimited by "// LLM: Section: <name>".
-    sections = re.split(r"\/\/ LLM:\s*(Omitted)?\s*Section:\s*([^\n]+)\n", body)
-    # Give the first section a name if it is missing.
-    if (sections[0] == ""):
-      # Delete the first empty string.
-      del sections[0]
-    else:
-      # Add an empty name and not-omitted to the first section.
-      sections.insert(0, "")  # Name
-      sections.insert(0, "")  # Not omitted
-    # List should contain an even number of elements.
-    if len(sections) % 3 != 0:
-      print("Bug: Section splitting failed.")
-      fail()
-    
-    # Convert the list to dictionaries of code and omitted.
-    ret_code = {}
-    ret_omitted = {}
-    for i in range(0, len(sections), 3):
-      omitted = sections[i] == "Omitted"
-      name = sections[i + 1]
-      code = sections[i + 2]
-      ret_code[name] = code
-      ret_omitted[name] = omitted
-      # Requests cannot have Omitted sections. Omitted sections cannot contain code.
-      if omitted:
-        if response:
-          if code != "":
-            print("Warning: Verilog of response has an omitted section with code.")
-        else:
-          print("Warning: Verilog of request has an omitted section.")
-    
-    return [ret_code, ret_omitted]
-  """
-    
   # Convert the given LLM API response string from the pseudo-Markdown format requested into an object, as described
   # in default_system_message.txt.
   # response: The response string from the LLM API.
@@ -1716,11 +1672,11 @@ def fev_current(use_eqy = True, use_original = False):
 
   # This is a good time to strip temporary comments from the LLM and change New Task comments to Old Task.
   # We've found it sometimes convenient to ask the LLM to insert these so it doesn't forget what it has done.
-  os.system("sed -i '/^\s*\/\/\s*LLM:\s*Temporary:.*/d' " + checkpointed_verilog_file)  # Whole line.
+  os.system(r"sed -i '/^\s*\/\/\s*LLM:\s*Temporary:.*/d' " + checkpointed_verilog_file)  # Whole line.
   # Also remove these at the end of a line without deleting the line.
-  os.system("sed -i 's/^\s*\/\/\s*LLM:\s*Temporary:.*//' " + checkpointed_verilog_file)
+  os.system(r"sed -i 's/^\s*\/\/\s*LLM:\s*Temporary:.*//' " + checkpointed_verilog_file)
   # Change "New Task" to "Old Task".
-  os.system("sed -i 's/\/\/\s*LLM:\s*New Task:/\/\/ LLM: Old Task:/' " + checkpointed_verilog_file)
+  os.system(r"sed -i 's/\/\/\s*LLM:\s*New Task:/\/\/ LLM: Old Task:/' " + checkpointed_verilog_file)
 
   status = readStatus()
   # Get the most recently FEVed code (mod with status["fev"] == "passed").
@@ -1872,17 +1828,21 @@ def reset_prompt(type, prev_prompt_id):
 ######################
 
 
+# Get the directory of this script.
+repo_dir = os.path.dirname(os.path.realpath(__file__))
+
+
 #############
 # Constants #
 #############
 
-
 # The various LLM APIs we support and their properties.
 # In addition to use by this script, these properties are stringified and passed via M5 to
 # default_system_messages.txt.
-with open("config/apis.json") as f:
+# Access apis.json relative to this script's directory.
+with open(repo_dir + "/config/apis.json") as f:
     apis = json.load(f)
-with open("config/models.json") as f:
+with open(repo_dir + "/config/models.json") as f:
     model_data = json.load(f)
     models = model_data["models"]
     important_models = model_data["important"]
@@ -1923,9 +1883,6 @@ def get_message_bundler_for_model(model):
   return message_bundler[apis[models[model]["api"]]["format"]]
 def get_message_bundler_for_api(api):
   return message_bundler[apis[api]["format"]]
-
-# Get the directory of this script.
-repo_dir = os.path.dirname(os.path.realpath(__file__))
 
 
 ###########################

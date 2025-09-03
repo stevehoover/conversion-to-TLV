@@ -1,2 +1,5 @@
 pynput
 openai
+dotenv
+google.generativeai
+anthropic
