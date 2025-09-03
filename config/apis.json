@@ -59,8 +59,8 @@
   },
   "claude": {
     "system_role": "system",
-    "format": "json",
+    "format": "md",
     "structured": true,
-    "max_output_tokens": 4096
+    "max_output_tokens": 16000
   }
 }

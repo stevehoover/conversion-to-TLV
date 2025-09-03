@@ -483,8 +483,8 @@ class Claude_API(LLM_API):
             })
 
     max_tokens = api_props.get("max_output_tokens", 4096)
-    if max_tokens > 8000:
-        max_tokens = 8000
+    if max_tokens > 16000:
+        max_tokens = 16000
 
     print("\nCalling " + model + "...")
     try:
@@ -742,19 +742,20 @@ class ChangeMerger:
   def adjust_diff(input_diff, output_diff):
     success = True
     hunk = []  # Lines of the current hunk before writing it out with adjusted header
-    skip_hunk = True  # Skip hunks with no deltas
+    has_meaningful_changes = False  # Track if hunk has real changes
     llm_line_offset = 0  # Tracks offset adjustments for the original (LLM response) file
     #-pre_llm_line_offset = 0  # Tracks offset adjustments for the modified (pre-LLM) file
 
     with open(input_diff, 'r') as infile, open(output_diff, 'w') as outfile:
       line_type = "file_header"
-      for line in infile:
+      for line_num, line in enumerate(infile, 1):
+        print(f"DEBUG: Line {line_num}: {repr(line)}")  # Show exact line content
         if ChangeMerger.hunk_header_re.match(line):
           # Handle the previous hunk
-          if not skip_hunk:
+          if has_meaningful_changes:
             llm_line_offset += ChangeMerger.write_hunk(hunk, outfile, llm_line_offset)
           hunk = []  # Start a new hunk
-          skip_hunk = True  # Reset skip flag
+          has_meaningful_changes = False  # Reset for new hunk
           line_type = "keep"
         elif line_type == "file_header":
           # Haven't reached the first hunk yet.
@@ -774,11 +775,12 @@ class ChangeMerger:
           if line_type == "..." or line_type == "omitted":
             # Change line from "+" prefix to " " prefix.
             line = line.replace('+', ' ', 1)
+            has_meaningful_changes = True  # Mark as meaningful
             # This line was omitted from original (LLM response) and we're adding it back.
             #llm_line_offset += 1
             line_type = "omitted"
           else:
-            skip_hunk = False
+            has_meaningful_changes = True
             line_type = "+"
         elif line.startswith('-'):
           if line_type == "...":
@@ -787,7 +789,7 @@ class ChangeMerger:
             success = False
             break
           else:
-            skip_hunk = False
+            has_meaningful_changes = True
             line_type = "-"
         else:
           # No delta (context) line.
@@ -796,7 +798,7 @@ class ChangeMerger:
           hunk.append(line)
 
       # Handle the final hunk
-      if not skip_hunk:
+      if has_meaningful_changes:
         ChangeMerger.write_hunk(hunk, outfile, llm_line_offset)
 
     return success
@@ -1344,6 +1346,14 @@ def init_refactoring_step():
   while not ok:
     prompt_id += 1
 
+    # Check if we've reached the end of prompts
+    if prompt_id >= len(prompts):
+      print("Conversion completed successfully!")
+      print("All refactoring steps have been completed.")
+      print(f"Final refactored file: {working_verilog_file_name}")
+      print("You can now proceed with TL-Verilog conversion.")
+      sys.exit(0)
+
     # Check if conditions.
     if_ok = True     # Prompt is okay to execute based on "if" conditions.
     if "if" in prompts[prompt_id]:
@@ -1600,6 +1610,11 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
         if field in extra_fields:
           status[field] = extra_fields[field]
+      # Manual extraction of extra_fields for must_produce fields
+      if "extra_fields" in response_obj:
+        for field_name, field_value in response_obj["extra_fields"].items():
+          status[field_name] = field_value
+          print(f"DEBUG: Manually saved {field_name} to status")
         
       checkpoint(status, orig_status, "tmp/llm.v")
 

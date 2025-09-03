@@ -221,6 +221,22 @@ The prompt for the specific refactoring step may request "extra output fields" i
   ```
 ']. ['These should be formatted like the standard fields, above, using second-level Markdown header syntax delimited by single blank lines followed by the literal text (possibly multi-line) for their field values. These field names will be lower-case and may contain underscores.'])
 
+m5_if($md, ['
+  These should be formatted like the standard fields, above, using a second-level Markdown header ## extra_fields and then third-level headers for each key under it. For example:
+
+  ## issues
+  ...
+  ## notes
+  ...
+  ## plan
+  ...
+  ## extra_fields
+  ### clock
+  clk
+  ### reset
+  rst
+']. ['These should be formatted with "extra_fields" as a standard second-level Markdown header field (## extra_fields), followed by individual extra field names using third-level Markdown header syntax (### fieldname) delimited by single blank lines. Field values are literal text (possibly multi-line) that may contain underscores.'])
+
 11. Example Responses
 
 1) This example shows the response from a very safe and simple transformation on a very simple module. The response simply provides the updated code. Note the lack of block quote syntax in the "verilog" field, and the use of `true` and `false` for boolean fields.
