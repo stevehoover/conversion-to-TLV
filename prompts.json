@@ -678,6 +678,7 @@
 },{
 "desc": "Determine the signal naming conventions",
 "comment": "This would work better as a code analysis step that analyzes the entire codebase.",
+"must_produce": ["naming"],
 "prompt":
 "Analyze the signal names in the code, looking for any suffixes or prefixes that might indicate the nature of the signals. Any prefixes or suffixes used to group related logic are less important. Pay particular attention to the staging of signals in the code and its relation to the signal names. Popular naming conventions might identify pipelines and pipeline stages, or they might indicate that one signal is a staged version of another signal. There might be conventions that indicate whether signals change on the rising or falling edge of the clock or have unique behavior on either edge of the clock. One convention used by the conversion process thus far is the use of the prefix `NEXT_` for signals that will immediately be flopped.
 +
@@ -694,6 +695,7 @@
 "desc": "Pipelines",
 "needs": ["naming"],
 "TODO": "Can't have optional 'pipelines' field.",
+"may_produce": ["pipelines"],
 "prompt":
 "Analyze the code to determine where the design uses pipelines. In this context a pipeline involves computations or processing that is stretched out over multiple clock cycles. It could even simply be the staging of data. This processing must flow freely without any form of backpressure or stalling to be considered part of the same pipeline. Determine meaningful names for the identified pipelines. Choose a pipeline stage numbering for each such pipeline (or if one has already been determined, keep it). The first pipeline stage with any appreciable logic can be identified as stage 1. Add \"LLM: ...\" comments to the code to annotate the code with these pipeline stages.
 +
