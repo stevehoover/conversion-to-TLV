@@ -226,23 +226,40 @@ class OpenAI_API(LLM_API):
       if os.path.exists(key_file_name):
         with open(key_file_name) as file:
           os.environ["OPENAI_API_KEY"] = file.read()
-      else:
-        os.environ["OPENAI_API_KEY"] = input("Enter your OpenAI API key: ")
-    
-    # Use an organization in the request if one is provided, either in the OPENAI_ORG_ID env var or in ~/.openai/org_id.txt.
-    self.org_id = os.getenv("OPENAI_ORG_ID")
-    if not self.org_id:
-      org_file_name = os.path.expanduser("~/.openai/org_id.txt")
-      if os.path.exists(org_file_name):
-        with open(org_file_name) as file:
-          self.org_id = file.read()
-    
-    # Init OpenAI.
-    self.client = OpenAI() if self.org_id is None else OpenAI(organization=self.org_id)
-    models = self.client.models
-    self.models = self.client.models.list()
+      
+    # Only initialize if API key is available
+    if os.getenv("OPENAI_API_KEY"):
+      # Use an organization in the request if one is provided, either in the OPENAI_ORG_ID env var or in ~/.openai/org_id.txt.
+      self.org_id = os.getenv("OPENAI_ORG_ID")
+      if not self.org_id:
+        org_file_name = os.path.expanduser("~/.openai/org_id.txt")
+        if os.path.exists(org_file_name):
+          with open(org_file_name) as file:
+            self.org_id = file.read().strip()
+      
+      # Init OpenAI.
+      try:
+        self.client = OpenAI() if self.org_id is None else OpenAI(organization=self.org_id)
+        self.models = self.client.models.list()
+      except Exception as e:
+        print(f"Warning: Failed to initialize OpenAI API: {e}")
+        self.client = None
+        self.models = None
+    else:
+      self.client = None
+      self.models = None
   
   def validateModel(self, model):
+    # If no API key available, prompt for it now
+    if not self.client or not self.models:
+      if not os.getenv("OPENAI_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = input("Enter your OpenAI API key: ")
+        self.__init__()  # Reinitialize with the new key
+      
+      if not self.client or not self.models:
+        print("Error: Failed to initialize OpenAI API even with provided key.")
+        fail()
+        
     # Get the data for the model (or None if not found)
     model_data = next((item for item in self.models.data if hasattr(item, 'id') and item.id == model), None)
     if model_data is None:
@@ -350,15 +367,33 @@ class Gemini_API(LLM_API):
       if os.path.exists(key_file_name):
         with open(key_file_name) as file:
           os.environ["GOOGLE_API_KEY"] = file.read()
-      else:
-        os.environ["GOOGLE_API_KEY"] = input("Enter your Google API key: ")
-
-    # Initialize the Gemini client
-    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    self.models = list(genai.list_models())
-    self.model_ids = [m.name.replace("models/", "") for m in self.models]
+      
+    # Only initialize if API key is available
+    if os.getenv("GOOGLE_API_KEY"):
+      try:
+        # Initialize the Gemini client
+        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+        self.models = list(genai.list_models())
+        self.model_ids = [m.name.replace("models/", "") for m in self.models]
+      except Exception as e:
+        print(f"Warning: Failed to initialize Gemini API: {e}")
+        self.models = []
+        self.model_ids = []
+    else:
+      self.models = []
+      self.model_ids = []
   
   def validateModel(self, model):
+    # If no API key available, prompt for it now
+    if not self.model_ids:
+      if not os.getenv("GOOGLE_API_KEY"):
+        os.environ["GOOGLE_API_KEY"] = input("Enter your Google API key: ")
+        self.__init__()  # Reinitialize with the new key
+        
+      if not self.model_ids:
+        print("Error: Failed to initialize Gemini API even with provided key.")
+        fail()
+        
     # Check if model is in available models
     if model not in self.model_ids:
       print(f"Error: Model {model} not found in available Gemini models.")
@@ -437,23 +472,35 @@ class Claude_API(LLM_API):
       if os.path.exists(key_file):
         with open(key_file) as file:
           os.environ["ANTHROPIC_API_KEY"] = file.read().strip()
-      else:
-        os.environ["ANTHROPIC_API_KEY"] = input("Enter your Claude API key: ")
-
-    # Init Anthropic client.
-    self.client = anthropic.Anthropic()
-
-    # Get available models from API
-    try:
-      self.models = [m.id for m in self.client.models.list()]
-    except Exception as e:
-      print("Error retrieving Claude models from API:")
-      print(e)
+          
+    # Only initialize if API key is available
+    if os.getenv("ANTHROPIC_API_KEY"):
+      try:
+        # Init Anthropic client.
+        self.client = anthropic.Anthropic()
+        # Get available models from API
+        self.models = [m.id for m in self.client.models.list()]
+      except Exception as e:
+        print(f"Warning: Failed to initialize Claude API: {e}")
+        self.client = None
+        self.models = []
+    else:
+      self.client = None
       self.models = []
 
 
   def validateModel(self, model):
-    if model not in [m for m in self.models]:
+    # If no API key available, prompt for it now
+    if not self.client or not self.models:
+      if not os.getenv("ANTHROPIC_API_KEY"):
+        os.environ["ANTHROPIC_API_KEY"] = input("Enter your Claude API key: ")
+        self.__init__()  # Reinitialize with the new key
+        
+      if not self.client or not self.models:
+        print("Error: Failed to initialize Claude API even with provided key.")
+        fail()
+        
+    if model not in self.models:
       print("Error: Model " + model + " not found.")
       fail()
 
@@ -748,8 +795,7 @@ class ChangeMerger:
 
     with open(input_diff, 'r') as infile, open(output_diff, 'w') as outfile:
       line_type = "file_header"
-      for line_num, line in enumerate(infile, 1):
-        print(f"DEBUG: Line {line_num}: {repr(line)}")  # Show exact line content
+      for line in infile:
         if ChangeMerger.hunk_header_re.match(line):
           # Handle the previous hunk
           if has_meaningful_changes:
@@ -1610,12 +1656,7 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
         if field in extra_fields:
           status[field] = extra_fields[field]
-      # Manual extraction of extra_fields for must_produce fields
-      if "extra_fields" in response_obj:
-        for field_name, field_value in response_obj["extra_fields"].items():
-          status[field_name] = field_value
-          print(f"DEBUG: Manually saved {field_name} to status")
-        
+
       checkpoint(status, orig_status, "tmp/llm.v")
 
       # Now, checkpoint the user's changes, if there are any.
@@ -2077,16 +2118,20 @@ while True:
         claude_api = Claude_API()
         all_models = []
 
-        for m in openai_api.models.data:
-            if hasattr(m, 'id'):
-                all_models.append((m.id, "OpenAI"))
+        # Only add models from APIs that are available
+        if openai_api.models:
+          for m in openai_api.models.data:
+              if hasattr(m, 'id'):
+                  all_models.append((m.id, "OpenAI"))
 
-        for m in gemini_api.models:
-            model_id = m.name.replace("models/", "")
-            all_models.append((model_id, "Gemini"))
+        if gemini_api.models:
+          for m in gemini_api.models:
+              model_id = m.name.replace("models/", "")
+              all_models.append((model_id, "Gemini"))
 
-        for m in claude_api.models:
-            all_models.append((m, "Claude"))
+        if claude_api.models:
+          for m in claude_api.models:
+              all_models.append((m, "Claude"))
 
         # Filter if "m" pressed
         if key == "m":
