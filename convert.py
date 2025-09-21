@@ -112,6 +112,7 @@ import stat
 import copy
 import google.generativeai as genai
 import anthropic
+import time
 
 # Confirm that we're using Python 3.7 or later (as we rely on dictionaries to be ordered).
 if sys.version_info < (3, 7):
@@ -1037,6 +1038,9 @@ def get_command(options):
 
 # Pause for a key press.
 def press_any_key(note=""):
+  # Skip the pause in automation mode
+  if automation_mode:
+    return
   print("Press any key to continue...%s\n>" % note, end="")
   getch()
   print("")
@@ -1299,6 +1303,13 @@ def to_extended_json(json_str):
 # Initialization #
 ##################
 
+#
+# Automation state
+#
+
+automation_mode = False
+automation_errors = []
+automation_model = None
 
 # Initialize messages.<api>.json.
 # This is specific to the API, but we do this when initializing the refactoring step (before we know the API)
@@ -1618,14 +1629,19 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
     # Prompt user to review, correct, and accept or reject the changes.
     done = False
     while not done:
-      ch = prompt_user("Verilog updated by LLM. Review in meld ([m] to open), edit as needed, and accept [a] or reject [r] this updated Verilog?", options=["a", "r", "m"], default="a")
-      if ch == "m":
-        # Open meld.
-        cmd = "meld current/feved.v current/chkpt.v " + working_verilog_file_name + " &"
-        print("Running: " + cmd)
-        os.system(cmd)
-      else:
+      # In automation mode, automatically accept
+      if automation_mode:
+        ch = "a"
         done = True
+      else:
+        ch = prompt_user("Verilog updated by LLM. Review in meld ([m] to open), edit as needed, and accept [a] or reject [r] this updated Verilog?", options=["a", "r", "m"], default="a")
+        if ch == "m":
+          # Open meld.
+          cmd = "meld current/feved.v current/chkpt.v " + working_verilog_file_name + " &"
+          print("Running: " + cmd)
+          os.system(cmd)
+        else:
+          done = True
 
     # If rejected, restore the working Verilog file to the previous change.
     # If accepted, checkpoint just the LLM's change first, then, if modified by the user,
@@ -1714,6 +1730,25 @@ def run_fev(orig_file_name, working_verilog_file_name, use_eqy = True):
   # Return status.
   # TODO: If failed, bundle failure info for LLM, and call LLM (with approval).
   return proc.returncode == 0
+
+def run_fev_automated():
+  """Run FEV in automated mode, return True if successful"""
+  global automation_errors
+  
+  try:
+    print("  Running FEV...")
+    success = fev_current(False)  # Use Yosys FEV (f command)
+    
+    if not success:
+      automation_errors.append("FEV failed - code changes may have introduced errors")
+      return False
+        
+    print("  FEV passed successfully")
+    return True
+      
+  except Exception as e:
+    automation_errors.append(f"FEV error: {str(e)}")
+    return False  
 
 # Run FEV against the last successfully FEVed code (if not in this refactoring step, the original code for this step).
 # Checkpoint the code first and FEV vs. this checkpoint.
@@ -1811,6 +1846,8 @@ def print_prompt():
   print("  (At any time: use \"n\" to undo changes; \"h\" for help; \"x\" to exit.)")
   print("  ")
   print("  Enter one of the following commands:")
+  print("    a: AUTOMATE. Run full automation (LLM->FEV->Accept) until completion or error.")
+  print("    r: Show automation eRrors and optionally clear them.")
   print("    l: LLM. Run with the default fast model (o4-mini).")
   print("    L: LLM. Run with the high-quality model (gpt-4o).")
   print("    m: LLM. Choose a model from important (recommended) options only.")
@@ -1824,6 +1861,13 @@ def print_prompt():
   print("    h: History. Show a history of recent changes in this refactoring step.")
   print("    ?: Help. Repeat this message.")
   print("    x: Exit.")
+  
+  # Show automation status
+  if automation_model:
+    print(f"  AUTOMATION MODEL: {automation_model}")  
+  if automation_errors:
+    print(f"  AUTOMATION ERRORS: {len(automation_errors)} error(s) need attention")
+  
   llm = llm_finished()
   status = readStatus()
   fev = status.get("fev") == "passed"
@@ -1834,6 +1878,293 @@ def print_prompt():
     if fev:
       print("    Code has passed FEV.")
 
+def run_automation():
+  """Run the automated refactoring process"""
+  global automation_mode, automation_errors, automation_model
+  
+  # If no model is selected or we're starting fresh, prompt for model selection
+  if not automation_model:
+    print("First, select a model for the entire automation process:")
+    if not select_automation_model():
+      return  # User cancelled or error occurred
+  
+  print(f"\nStarting automated refactoring process with {automation_model}...")
+  print("Process: LLM -> FEV -> Accept (if passed) -> Repeat")
+  print("Press Ctrl+C at any time to pause automation")
+  print("")
+  
+  automation_mode = True
+  automation_errors = []
+  
+  try:
+    while automation_mode:
+      # Check if we've completed all prompts
+      if prompt_id >= len(prompts):
+        print("Automation completed! All refactoring steps finished.")
+        break
+      print(f"=== Automated Step {refactoring_step}, Prompt {prompt_id} ===")
+      print(f"Description: {prompts[prompt_id]['desc']}")
+      print(f"Using model: {automation_model}")
+      
+      # Step 1: Run LLM with selected model
+      print("Step 1: Running LLM...")
+      if not run_llm_automated():
+        break  # Error occurred, exit automation
+      
+      # Check if LLM response is incomplete
+      status = readStatus()
+      if status.get("incomplete", False):
+        print("LLM response indicates refactoring is incomplete. Continuing in same step...")
+        continue  # Stay in the same refactoring step, run LLM again
+      
+      # Step 2: Run FEV
+      print("Step 2: Running FEV...")
+      if not run_fev_automated():
+        break  # Error occurred, exit automation
+      
+      # Step 3: Accept the refactoring step
+      print("Step 3: Accepting refactoring step...")
+      if not accept_step_automated():
+        break  # Error occurred, exit automation
+      
+      print("Step completed successfully!\n")
+      time.sleep(1)  # Brief pause between steps
+          
+  except Exception as e:
+    print(f"\nAutomation stopped due to unexpected error: {str(e)}")
+    automation_errors.append(f"Unexpected error: {str(e)}")
+  finally:
+    automation_mode = False
+
+  if automation_errors:
+    print("Automation encountered the following errors:")
+    for error in automation_errors:
+        print(f"  - {error}")
+    print("Please review and fix these issues, then resume automation with 'A'")
+
+def run_llm_automated():
+  """Run LLM in automated mode, return True if successful"""
+  global automation_errors, automation_model, automation_mode
+  # Ensure automation_mode is True during this call
+  original_automation_mode = automation_mode
+  automation_mode = True
+  
+  try:
+    # Use the selected automation model
+    if not automation_model:
+      automation_errors.append("No model selected for automation")
+      return False
+          
+    model = automation_model
+    if model not in models:
+      automation_errors.append(f"Selected model {model} not found in models configuration")
+      return False
+          
+    api = models[model]["api"]
+      
+    if apis.get(api) == None:
+      automation_errors.append(f"Invalid API for model {model}")
+      return False
+      
+    # Check if LLM already finished
+    if llm_finished():
+      print("  LLM already completed for this step")
+      return True
+      
+    # Get current Verilog content - same way as manual flow
+    try:
+      with open(working_verilog_file_name) as verilog_file:
+        verilog = verilog_file.read()
+        # Strip leading and trailing whitespace, then add trailing newline (same as manual flow)
+        verilog = verilog.strip() + "\n"
+    except Exception as e:
+      automation_errors.append(f"Failed to read Verilog file: {str(e)}")
+      return False
+      
+    # Load messages the same way as manual flow
+    messages_json = "messages." + api + ".json"
+    try:
+      with open(messages_json) as message_file:
+        msg_file_str = message_file.read()
+        msg_json = from_extended_json(msg_file_str)  # Use the same method as manual flow
+        messages = json.loads(msg_json)
+          
+        # Convert Gemini-style messages to OpenAI-style format (same as manual flow)
+        for m in messages:
+          if "parts" in m and "content" not in m:
+            m["content"] = "".join(m["parts"])
+            del m["parts"]
+        
+        # Add "plan" field if given (same as manual flow)
+        status = readStatus()
+        if "plan" in status:
+          messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
+            
+    except Exception as e:
+      automation_errors.append(f"Failed to load {messages_json}: {str(e)}")
+      return False
+    
+    print(f"  Calling LLM API ({model})...")
+    # Use the same run_llm call as manual flow
+    run_llm(messages, verilog, model)
+
+    # Check if LLM completed successfully
+    if not llm_finished():
+      automation_errors.append("LLM did not complete successfully")
+      return False
+        
+    print("  LLM completed successfully")
+    return True
+      
+  except Exception as e:
+    automation_errors.append(f"LLM error: {str(e)}")
+    return False
+  finally:
+    # Restore original automation mode
+    automation_mode = original_automation_mode
+
+def select_automation_model():
+  """Let user select a model for automation at the start"""
+  global automation_model, llm_api
+  
+  # Load all models and APIs
+  openai_api = OpenAI_API()
+  gemini_api = Gemini_API()
+  claude_api = Claude_API()
+  all_models = []
+
+  # Collect all available models
+  try:
+    for m in openai_api.models.data:
+      if hasattr(m, 'id'):
+        all_models.append((m.id, "OpenAI"))
+  except:
+    pass
+
+  try:
+    for m in gemini_api.models:
+      model_id = m.name.replace("models/", "")
+      all_models.append((model_id, "Gemini"))
+  except:
+    pass
+
+  try:
+    for m in claude_api.models:
+      all_models.append((m, "Claude"))
+  except:
+    pass
+
+  # Filter to important models only for automation
+  important_automation_models = [(name, vendor) for name, vendor in all_models if name in important_models]
+  
+  if not important_automation_models:
+    print("Error: No important models available for automation")
+    return False
+
+  # Display available models
+  print("Select a model for automation:")
+  for i, (name, vendor) in enumerate(important_automation_models):
+    print(f"  {i}: ({vendor}) {name}")
+  
+  while True:
+    try:
+      choice_input = input("Enter model number (or 'c' to cancel): ").strip()
+      if choice_input.lower() == 'c':
+        print("Automation cancelled.")
+        return False
+      choice = int(choice_input)
+      if 0 <= choice < len(important_automation_models):
+        automation_model = important_automation_models[choice][0]
+        vendor = important_automation_models[choice][1]
+        print(f"Selected model: ({vendor}) {automation_model}")
+        if vendor == "OpenAI":
+          llm_api = openai_api
+        elif vendor == "Gemini":
+          llm_api = gemini_api
+        elif vendor == "Claude":
+          llm_api = claude_api
+        return True
+      else:
+        print("Invalid choice. Try again.")
+    except ValueError:
+      print("Invalid input. Enter a number or 'c' to cancel.")
+
+
+def accept_step_automated():
+  """Accept the refactoring step in automated mode, return True if successful"""
+  global automation_errors
+  
+  try:
+    status = readStatus()
+    
+    # Check if there are pending manual edits and checkpoint them automatically
+    if diff(working_verilog_file_name, mod_path() + "/" + working_verilog_file_name):
+      print("  Found pending manual edits, checkpointing them...")
+      checkpoint_if_pending()
+      print("  Manual edits checkpointed successfully")
+    
+    if status.get("fev") != "passed":
+      automation_errors.append("FEV has not passed - cannot auto-accept")
+      return False
+    
+    # Check for problematic comments
+    grep_output = os.popen("grep -E 'LLM: (New|Old) Task:' " + working_verilog_file_name).read()
+    grep_output += os.popen("grep -E '//\s*User:' " + working_verilog_file_name).read()
+    
+    if grep_output != "":
+      automation_errors.append("Found comments that need manual review - cannot auto-accept")
+      return False
+    
+    # The refactoring step should only be accepted if it's complete
+    if status.get("incomplete", False):
+      automation_errors.append("LLM reported refactoring is incomplete - cannot auto-accept")
+      return False
+    
+    # Accept the modification
+    status["accepted"] = True
+    writeStatus(status)
+    
+    # Move to next refactoring step
+    init_refactoring_step()
+    
+    print("  Refactoring step accepted successfully")
+    return True
+      
+  except Exception as e:
+    automation_errors.append(f"Accept step error: {str(e)}")
+    return False      
+
+def show_automation_errors():
+  """Display current automation errors"""
+  global automation_errors, automation_model
+  
+  if not automation_errors:
+    print("No automation errors.")
+    return
+  
+  print(f"Current automation errors ({len(automation_errors)}):")
+  for i, error in enumerate(automation_errors, 1):
+    print(f"  {i}. {error}")
+  print("")
+  
+  if automation_model:
+    print(f"Current automation model: {automation_model}")
+  
+  # Options to clear errors or change model
+  print("Options:")
+  print("  c: Clear all errors")
+  print("  m: Change automation model")
+  print("  n: Do nothing")
+  
+  ch = prompt_user("Choose an option", ["c", "m", "n"], "n")
+  if ch == "c":
+    automation_errors.clear()
+    print("All automation errors cleared.")
+  elif ch == "m":
+    if select_automation_model():
+      print("Automation model updated.")
+    else:
+      print("Model selection cancelled.")
 
 # Reset the current prompt/refactoring-step (which is just starting (by reversion, perhaps)) to a
 # fresh one (type "r") or the previous one (type "u"). For "u", update state files.
@@ -2097,10 +2428,17 @@ while True:
   while True:
     # Get the user's command as a single key press (without <Enter>) using pynput library.
     # TODO: Replay get_command(..) in favor of prompt_user(..).
-    key = get_command(["l", "L", "m", "M", "e", "f", "E", "y", "u", "U", "c", "p", "h", "?", "x"])
+    key = get_command(["a", "r", "l", "L", "m", "M", "e", "f", "E", "y", "u", "U", "c", "p", "h", "?", "x"])
 
     # Process the user's command.
-    if key == "l" or key == "L" or key == "m" or key == "M":
+    if key == "a":
+      # Start automation
+      run_automation()
+      break  # Return to main prompt after automation
+    elif key == "r":
+      # Show automation errors
+      show_automation_errors()
+    elif key == "l" or key == "L" or key == "m" or key == "M":
       # Determine model.
       model = None
       if key == "l":
@@ -2209,7 +2547,7 @@ while True:
     elif key == "f":
       fev_current(False)
     elif key == "E":
-      fev_current(True, True)
+      fev_current(True, True) 
     elif key == "y":
       status = readStatus()
       # Can only accept changes that have been FEVed.
