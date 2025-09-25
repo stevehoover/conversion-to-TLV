@@ -2,7 +2,7 @@
 
 ## Setup
 
-In a Ubuntu or MacOS system, clone, `cd` into repo, and run `./init`, which will install tools in your system using `sudo`. (TODO: This process needs updates for newer `venv` requirements.)
+In a Ubuntu or MacOS system, clone, `cd` into repo, and run `./init`, which will install tools in your system using `sudo`. This will set up Python venv in `<repo>/.venv` and instruct you about its use.
 
 ## Goal
 
@@ -12,7 +12,7 @@ If you ask ChatGPT to convert your code today, you won't be happy with the resul
 
 ## Approach
 
-We aim to use existing LLMs, primarily various versions of ChatGPT via its API. We do not intend to tune a custom LLM (though that might be an option). The LLM will be trained through the conversation, primarily using "system messages".
+We aim to use existing LLMs via their APIs. We do not intend to tune a custom LLM (though that might be an option). The LLM will be trained through the conversation, primarily using "system messages".
 
 A command-line Python script (`convert.py`) controls the interactions with the LLM. The script uses a recipe for conversion that includes numerous incremental conversion steps. The bulk of the process is refactoring Verilog to a form that looks similar to the (System)Verilog that would be produce by Redwood EDA's SandPiper™ tool. Each step:
 
@@ -47,6 +47,10 @@ To streamline configuration, a `config/` directory organizes API and model infor
 - `models.json` lists all available models and highlights a curated subset for quicker access.
 
 Within the interface, users can list all models or filter to just the important ones for easier navigation.
+
+## Use
+
+To convert code, create a directory. We're currently recommending this live in a different repo. Run `convert.py` from there.
 
 ## Contributing
 
