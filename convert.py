@@ -226,23 +226,40 @@ class OpenAI_API(LLM_API):
       if os.path.exists(key_file_name):
         with open(key_file_name) as file:
           os.environ["OPENAI_API_KEY"] = file.read()
-      else:
-        os.environ["OPENAI_API_KEY"] = input("Enter your OpenAI API key: ")
-    
-    # Use an organization in the request if one is provided, either in the OPENAI_ORG_ID env var or in ~/.openai/org_id.txt.
-    self.org_id = os.getenv("OPENAI_ORG_ID")
-    if not self.org_id:
-      org_file_name = os.path.expanduser("~/.openai/org_id.txt")
-      if os.path.exists(org_file_name):
-        with open(org_file_name) as file:
-          self.org_id = file.read()
-    
-    # Init OpenAI.
-    self.client = OpenAI() if self.org_id is None else OpenAI(organization=self.org_id)
-    models = self.client.models
-    self.models = self.client.models.list()
+      
+    # Only initialize if API key is available
+    if os.getenv("OPENAI_API_KEY"):
+      # Use an organization in the request if one is provided, either in the OPENAI_ORG_ID env var or in ~/.openai/org_id.txt.
+      self.org_id = os.getenv("OPENAI_ORG_ID")
+      if not self.org_id:
+        org_file_name = os.path.expanduser("~/.openai/org_id.txt")
+        if os.path.exists(org_file_name):
+          with open(org_file_name) as file:
+            self.org_id = file.read().strip()
+      
+      # Init OpenAI.
+      try:
+        self.client = OpenAI() if self.org_id is None else OpenAI(organization=self.org_id)
+        self.models = self.client.models.list()
+      except Exception as e:
+        print(f"Warning: Failed to initialize OpenAI API: {e}")
+        self.client = None
+        self.models = None
+    else:
+      self.client = None
+      self.models = None
   
   def validateModel(self, model):
+    # If no API key available, prompt for it now
+    if not self.client or not self.models:
+      if not os.getenv("OPENAI_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = input("Enter your OpenAI API key: ")
+        self.__init__()  # Reinitialize with the new key
+      
+      if not self.client or not self.models:
+        print("Error: Failed to initialize OpenAI API even with provided key.")
+        fail()
+        
     # Get the data for the model (or None if not found)
     model_data = next((item for item in self.models.data if hasattr(item, 'id') and item.id == model), None)
     if model_data is None:
@@ -350,15 +367,33 @@ class Gemini_API(LLM_API):
       if os.path.exists(key_file_name):
         with open(key_file_name) as file:
           os.environ["GOOGLE_API_KEY"] = file.read()
-      else:
-        os.environ["GOOGLE_API_KEY"] = input("Enter your Google API key: ")
-
-    # Initialize the Gemini client
-    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    self.models = list(genai.list_models())
-    self.model_ids = [m.name.replace("models/", "") for m in self.models]
+      
+    # Only initialize if API key is available
+    if os.getenv("GOOGLE_API_KEY"):
+      try:
+        # Initialize the Gemini client
+        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+        self.models = list(genai.list_models())
+        self.model_ids = [m.name.replace("models/", "") for m in self.models]
+      except Exception as e:
+        print(f"Warning: Failed to initialize Gemini API: {e}")
+        self.models = []
+        self.model_ids = []
+    else:
+      self.models = []
+      self.model_ids = []
   
   def validateModel(self, model):
+    # If no API key available, prompt for it now
+    if not self.model_ids:
+      if not os.getenv("GOOGLE_API_KEY"):
+        os.environ["GOOGLE_API_KEY"] = input("Enter your Google API key: ")
+        self.__init__()  # Reinitialize with the new key
+        
+      if not self.model_ids:
+        print("Error: Failed to initialize Gemini API even with provided key.")
+        fail()
+        
     # Check if model is in available models
     if model not in self.model_ids:
       print(f"Error: Model {model} not found in available Gemini models.")
@@ -437,23 +472,35 @@ class Claude_API(LLM_API):
       if os.path.exists(key_file):
         with open(key_file) as file:
           os.environ["ANTHROPIC_API_KEY"] = file.read().strip()
-      else:
-        os.environ["ANTHROPIC_API_KEY"] = input("Enter your Claude API key: ")
-
-    # Init Anthropic client.
-    self.client = anthropic.Anthropic()
-
-    # Get available models from API
-    try:
-      self.models = [m.id for m in self.client.models.list()]
-    except Exception as e:
-      print("Error retrieving Claude models from API:")
-      print(e)
+          
+    # Only initialize if API key is available
+    if os.getenv("ANTHROPIC_API_KEY"):
+      try:
+        # Init Anthropic client.
+        self.client = anthropic.Anthropic()
+        # Get available models from API
+        self.models = [m.id for m in self.client.models.list()]
+      except Exception as e:
+        print(f"Warning: Failed to initialize Claude API: {e}")
+        self.client = None
+        self.models = []
+    else:
+      self.client = None
       self.models = []
 
 
   def validateModel(self, model):
-    if model not in [m for m in self.models]:
+    # If no API key available, prompt for it now
+    if not self.client or not self.models:
+      if not os.getenv("ANTHROPIC_API_KEY"):
+        os.environ["ANTHROPIC_API_KEY"] = input("Enter your Claude API key: ")
+        self.__init__()  # Reinitialize with the new key
+        
+      if not self.client or not self.models:
+        print("Error: Failed to initialize Claude API even with provided key.")
+        fail()
+        
+    if model not in self.models:
       print("Error: Model " + model + " not found.")
       fail()
 
@@ -483,8 +530,8 @@ class Claude_API(LLM_API):
             })
 
     max_tokens = api_props.get("max_output_tokens", 4096)
-    if max_tokens > 8000:
-        max_tokens = 8000
+    if max_tokens > 16000:
+        max_tokens = 16000
 
     print("\nCalling " + model + "...")
     try:
@@ -742,7 +789,7 @@ class ChangeMerger:
   def adjust_diff(input_diff, output_diff):
     success = True
     hunk = []  # Lines of the current hunk before writing it out with adjusted header
-    skip_hunk = True  # Skip hunks with no deltas
+    has_meaningful_changes = False  # Track if hunk has real changes
     llm_line_offset = 0  # Tracks offset adjustments for the original (LLM response) file
     #-pre_llm_line_offset = 0  # Tracks offset adjustments for the modified (pre-LLM) file
 
@@ -751,10 +798,10 @@ class ChangeMerger:
       for line in infile:
         if ChangeMerger.hunk_header_re.match(line):
           # Handle the previous hunk
-          if not skip_hunk:
+          if has_meaningful_changes:
             llm_line_offset += ChangeMerger.write_hunk(hunk, outfile, llm_line_offset)
           hunk = []  # Start a new hunk
-          skip_hunk = True  # Reset skip flag
+          has_meaningful_changes = False  # Reset for new hunk
           line_type = "keep"
         elif line_type == "file_header":
           # Haven't reached the first hunk yet.
@@ -774,11 +821,12 @@ class ChangeMerger:
           if line_type == "..." or line_type == "omitted":
             # Change line from "+" prefix to " " prefix.
             line = line.replace('+', ' ', 1)
+            has_meaningful_changes = True  # Mark as meaningful
             # This line was omitted from original (LLM response) and we're adding it back.
             #llm_line_offset += 1
             line_type = "omitted"
           else:
-            skip_hunk = False
+            has_meaningful_changes = True
             line_type = "+"
         elif line.startswith('-'):
           if line_type == "...":
@@ -787,7 +835,7 @@ class ChangeMerger:
             success = False
             break
           else:
-            skip_hunk = False
+            has_meaningful_changes = True
             line_type = "-"
         else:
           # No delta (context) line.
@@ -796,7 +844,7 @@ class ChangeMerger:
           hunk.append(line)
 
       # Handle the final hunk
-      if not skip_hunk:
+      if has_meaningful_changes:
         ChangeMerger.write_hunk(hunk, outfile, llm_line_offset)
 
     return success
@@ -1344,6 +1392,14 @@ def init_refactoring_step():
   while not ok:
     prompt_id += 1
 
+    # Check if we've reached the end of prompts
+    if prompt_id >= len(prompts):
+      print("Conversion completed successfully!")
+      print("All refactoring steps have been completed.")
+      print(f"Final refactored file: {working_verilog_file_name}")
+      print("You can now proceed with TL-Verilog conversion.")
+      sys.exit(0)
+
     # Check if conditions.
     if_ok = True     # Prompt is okay to execute based on "if" conditions.
     if "if" in prompts[prompt_id]:
@@ -1600,7 +1656,7 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
         if field in extra_fields:
           status[field] = extra_fields[field]
-        
+
       checkpoint(status, orig_status, "tmp/llm.v")
 
       # Now, checkpoint the user's changes, if there are any.
@@ -2062,16 +2118,20 @@ while True:
         claude_api = Claude_API()
         all_models = []
 
-        for m in openai_api.models.data:
-            if hasattr(m, 'id'):
-                all_models.append((m.id, "OpenAI"))
+        # Only add models from APIs that are available
+        if openai_api.models:
+          for m in openai_api.models.data:
+              if hasattr(m, 'id'):
+                  all_models.append((m.id, "OpenAI"))
 
-        for m in gemini_api.models:
-            model_id = m.name.replace("models/", "")
-            all_models.append((model_id, "Gemini"))
+        if gemini_api.models:
+          for m in gemini_api.models:
+              model_id = m.name.replace("models/", "")
+              all_models.append((model_id, "Gemini"))
 
-        for m in claude_api.models:
-            all_models.append((m, "Claude"))
+        if claude_api.models:
+          for m in claude_api.models:
+              all_models.append((m, "Claude"))
 
         # Filter if "m" pressed
         if key == "m":

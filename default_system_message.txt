@@ -3,7 +3,7 @@ m5_eval([
 
   var(json, m5_eq($api_format, json))
   var(md, m5_eq($api_format, md))
-  var(omit_ok, weak)
+  var(omit_ok, 0)
   var(use_uniquifiers, 1)
 
   DEBUG("Generating system messages with $api: "$api", $api_format: "$api_format"."$nl)
