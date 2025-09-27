@@ -1369,7 +1369,89 @@ def initialize_messages_json():
   if error:
     fail()
 
+def initialize_macro_messages_json(macro_id):
+  """Initialize messages.<api>.json with macro prompt content"""
+  status = readStatus()
+  error = False
+  macro = macro_prompts[macro_id] 
 
+  # For every API, initialize messages.<api>.json with macro prompt
+  for api in apis:
+    try:
+      status['api'] = api
+      messages_json = "messages." + api + ".json"
+
+      # Dynamically create the correct LLM API instance
+      if api.startswith(("gpt3", "gpt4", "gpt5", "o", "o-simple")):
+        llm_api = OpenAI_API()
+      elif api.startswith("gemini"):
+        llm_api = Gemini_API()
+      elif api == "claude":
+        llm_api = Claude_API()
+      else:
+        raise ValueError(f"Unknown or unsupported API type: {api}")
+
+      # Read the system message from <repo>/default_system_message.txt
+      with open(repo_dir + "/default_system_message.txt") as file:
+        system = file.read()
+      # Process with M5
+      system = processWithM5("system_message", api, system, status)
+
+      # Use macro prompt instead of individual prompt
+      prompt = macro["prompt"]
+      
+      # Add must_produce fields to the macro prompt if present
+      if "must_produce" in macro:
+        prompt += "\n\nNote that this macro transformation must produce the following extra fields:"
+        for field in macro["must_produce"]:
+          prompt += f"\n   {field}: (required field)"
+      
+      # Add may_produce fields if present
+      if "may_produce" in macro:
+        prompt += "\n\nNote that this macro transformation may produce the following extra fields:"
+        for field in macro["may_produce"]:
+          prompt += f"\n   {field}: (optional field)"
+      
+      # Add "needs" fields if present (from current status)
+      needs_fields = []
+      # Collect needs from all substeps
+      for substep in macro.get("substeps", []):
+        # Get needs from the individual prompts referenced by substeps
+        substep_id = substep["id"]
+        if substep_id < len(prompts) and "needs" in prompts[substep_id]:
+          needs_fields.extend(prompts[substep_id]["needs"])
+      
+      # Remove duplicates and add to prompt
+      needs_fields = list(set(needs_fields))
+      if needs_fields:
+        prompt += "\n\nNote that the following \"extra fields\" have been determined to characterize the Verilog code:"
+        for field in needs_fields:
+          value = str(status.get(field, "UNKNOWN"))
+          if value == "UNKNOWN":
+            print(f"Warning: The field \"{field}\" is needed by the macro prompt but is not in the status. Using \"UNKNOWN\".")
+          prompt += "\n   " + field + ": " + value
+
+      # Search prompt string for "m5_" and use M5 if found
+      if prompt.find("m5_") != -1:
+        prompt = processWithM5("macro_prompt", api, prompt, status)
+
+      message_obj = {}
+      # Add macro prompt content
+      message_obj["prompt"] = prompt
+      message = get_message_bundler_for_api(api).obj_to_request(message_obj)
+      ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(api, system, message), indent=4))
+      
+      # Write the macro-based messages file
+      with open(messages_json, "w") as message_file:
+        message_file.write(ejson_messages)
+        
+    except Exception as e:
+      print("Error: Failed to initialize macro messages." + api + ".json due to: " + str(e))
+      error = True
+      
+  if error:
+    fail()
+    
 # Write prompt_id.txt.
 def write_prompt_id():
   with open("prompt_id.txt", "w") as file:
@@ -1893,6 +1975,35 @@ def run_automation():
   print("Press Ctrl+C at any time to pause automation")
   print("")
   
+  # Check if we're at the beginning and need to reinitialize step 1 with macro format
+  if refactoring_step == 1 and prompt_id == 1:
+    print("  Reinitializing step 1 with macro format for automation...")
+    
+    # Find the first macro prompt (macro ID 0)
+    if len(macro_prompts) > 0:
+      first_macro = macro_prompts[0]
+      # Extract substep IDs from the new structure
+      substep_ids = [substep["id"] for substep in first_macro["substeps"]]
+      macro_prompt_info = {
+        "id": 0,
+        "desc": first_macro["desc"], 
+        "type": "macro",
+        "substeps": substep_ids
+      }
+      
+    
+    # Write the new format to both locations
+    with open("prompt_id.txt", "w") as file:
+      file.write(json.dumps(macro_prompt_info, indent=2))
+    
+    # Update the history directory
+    history_dir = f"history/{refactoring_step}"
+    if os.path.exists(history_dir):
+      with open(f"{history_dir}/prompt_id.txt", "w") as file:
+        file.write(json.dumps(macro_prompt_info, indent=2))
+    
+    print("  Step 1 reinitialized with macro format")
+  
   automation_mode = True
   automation_errors = []
   
@@ -1902,34 +2013,60 @@ def run_automation():
       if prompt_id >= len(prompts):
         print("Automation completed! All refactoring steps finished.")
         break
-      print(f"=== Automated Step {refactoring_step}, Prompt {prompt_id} ===")
-      print(f"Description: {prompts[prompt_id]['desc']}")
-      print(f"Using model: {automation_model}")
       
-      # Step 1: Run LLM with selected model
-      print("Step 1: Running LLM...")
-      if not run_llm_automated():
-        break  # Error occurred, exit automation
+      # Check if this prompt is part of a macro prompt
+      macro_id = find_macro_for_prompt(prompt_id)
+      if macro_id is not None and len(macro_prompts) > 0:
+        # Show MACRO prompt information
+        print(f"=== Automated Macro Step {refactoring_step}, Macro {macro_id} ===")
+        print(f"Description: {macro_prompts[macro_id]['desc']}")
+        # Extract and display substep IDs
+        substep_ids = [substep["id"] for substep in macro_prompts[macro_id]["substeps"]]
+        print(f"Substeps: {substep_ids}")
+        print(f"Using model: {automation_model}")
+        
+        # Reinitialize messages with macro prompt content
+        print("  Initializing messages with macro prompt...")
+        initialize_macro_messages_json(macro_id)
+        
+        # Try macro approach first
+        macro_result = try_macro_approach(macro_id)
+        if macro_result == True:
+          print("Macro approach completed successfully!")
+          continue
+        elif macro_result == "continue":
+          print("Macro approach continuing incrementally in same step...")
+          continue  # Stay in same step, messages will be reinitialized with plan on next iteration
+        else:
+          # Check if automation_mode was disabled by user choice
+          if not automation_mode:
+            print("Automation stopped - user chose not to fall back to individual prompts.")
+            break
+          else:
+            print("Continuing with individual steps...")
+            # Reinitialize messages with individual prompt for fallback
+            print("  Reinitializing messages with individual prompt...")
+            initialize_messages_json()
+      else:
+        # Show individual prompt information only for non-macro prompts
+        print(f"=== Automated Step {refactoring_step}, Prompt {prompt_id} ===")
+        print(f"Description: {prompts[prompt_id]['desc']}")
+        print(f"Using model: {automation_model}")
+        
+        # Ensure messages are initialized for individual prompts
+        print("  Reinitializing messages with individual prompt...")
+        initialize_messages_json()
       
-      # Check if LLM response is incomplete
-      status = readStatus()
-      if status.get("incomplete", False):
-        print("LLM response indicates refactoring is incomplete. Continuing in same step...")
-        continue  # Stay in the same refactoring step, run LLM again
-      
-      # Step 2: Run FEV
-      print("Step 2: Running FEV...")
-      if not run_fev_automated():
-        break  # Error occurred, exit automation
-      
-      # Step 3: Accept the refactoring step
-      print("Step 3: Accepting refactoring step...")
-      if not accept_step_automated():
-        break  # Error occurred, exit automation
+      # Standard incremental approach
+      if not run_incremental_step():
+        break
       
       print("Step completed successfully!\n")
-      time.sleep(1)  # Brief pause between steps
+      time.sleep(1)
           
+  except KeyboardInterrupt:
+    print(f"\nAutomation paused by user (Ctrl+C)")
+    automation_mode = False
   except Exception as e:
     print(f"\nAutomation stopped due to unexpected error: {str(e)}")
     automation_errors.append(f"Unexpected error: {str(e)}")
@@ -1939,8 +2076,180 @@ def run_automation():
   if automation_errors:
     print("Automation encountered the following errors:")
     for error in automation_errors:
-        print(f"  - {error}")
-    print("Please review and fix these issues, then resume automation with 'A'")
+      print(f"  - {error}")
+
+def try_macro_approach(macro_id):
+  """Try the macro-level transformation"""
+  global prompt_id, automation_mode
+  
+  try:
+    macro = macro_prompts[macro_id]
+    substep_ids = [substep["id"] for substep in macro["substeps"]]
+    
+    # Get current Verilog content
+    with open(working_verilog_file_name) as verilog_file:
+      verilog = verilog_file.read().strip() + "\n"
+    
+    print(f"  Attempting macro transformation: {macro['desc']}")
+    
+    # Store original prompt_id for restoration if needed
+    original_prompt_id = prompt_id
+    
+    # Use the macro prompt
+    llm_success = run_macro_llm(macro_id, verilog)
+
+    # Check status regardless of llm_success
+    status = readStatus()
+    is_incomplete = status.get("incomplete", False)
+    
+    if is_incomplete:
+      print("  Macro transformation indicates work is incomplete - continuing incrementally...")
+      if "plan" in status:
+        print(f"  Plan established for next iteration")
+      
+      # Run FEV on the current incomplete state
+      print("  Running FEV on incremental macro result...")
+      if run_fev_automated():
+        print("  FEV passed - continuing macro work in same step...")
+        # Don't move to next refactoring step - stay in current step with updated plan
+        return "continue"  # Special return value to continue in same step
+      else:
+        print("  FEV failed on incomplete macro result")
+        return False
+    
+    elif llm_success:
+      # Complete macro transformation
+      print("  Running FEV on complete macro result...")
+      if run_fev_automated():
+        # Accept the macro transformation
+        print("  Accepting complete macro transformation...")
+        if accept_macro_step_automated(macro_id):
+          # Skip all the substeps since macro handled them
+          prompt_id = max(substep_ids) + 1
+          return True
+      else:
+        print("  FEV failed on complete macro result")
+        return False
+    
+    # Macro failed - ask user for confirmation before fallback
+    print("  Macro approach failed.")
+    
+    # In automation mode, ask user if they want to fall back to individual prompts
+    if automation_mode:
+      # Temporarily disable automation mode to get user input
+      automation_mode = False
+      
+      try:
+        ch = prompt_user("Macro approach failed. Fall back to individual prompts?", {"y", "n"}, "y")
+        
+        if ch == "y":
+          print("  Initializing fallback to individual steps...")
+          if init_fallback_refactoring_step(macro_id):
+            automation_mode = True  # Re-enable automation for fallback
+            return True  # Successfully initialized fallback
+          else:
+            # Fallback initialization failed, restore original state
+            prompt_id = original_prompt_id
+            return False
+        else:
+          print("  User chose not to fall back to individual prompts.")
+          prompt_id = original_prompt_id
+          return False
+      finally:
+        # Make sure automation mode is restored appropriately
+        if not automation_mode:
+          automation_mode = False  # User chose not to continue automation
+    else:
+      # In manual mode, always fall back without asking
+      print("  Initializing fallback to individual steps...")
+      if init_fallback_refactoring_step(macro_id):
+        return True  # Successfully initialized fallback
+      else:
+        # Fallback initialization failed, restore original state
+        prompt_id = original_prompt_id
+        return False
+    
+  except Exception as e:
+    print(f"  Macro approach error: {str(e)}")
+    return False
+    
+def run_macro_llm(macro_id, verilog):
+  """Run LLM with macro prompt"""
+  global automation_model
+  
+  try:
+    macro = macro_prompts[macro_id]
+    model = automation_model
+    api = models[model]["api"]
+    
+    # Create macro-specific messages
+    messages_json = "messages." + api + ".json"
+    
+    # Load base messages and modify for macro prompt
+    with open(messages_json) as message_file:
+      msg_file_str = message_file.read()
+      msg_json = from_extended_json(msg_file_str)
+      messages = json.loads(msg_json)
+    
+    # Replace the prompt with macro prompt
+    macro_message = macro["prompt"]
+    
+    # Add must_produce fields if present
+    if "must_produce" in macro:
+      macro_message += "\n\nNote that this macro transformation must produce the following extra fields:"
+      for field in macro["must_produce"]:
+        macro_message += f"\n   {field}: (required field)"
+    
+    # Update the last message content
+    messages[-1]["content"] = macro_message
+    
+    # Convert Gemini-style messages if needed
+    for m in messages:
+      if "parts" in m and "content" not in m:
+        m["content"] = "".join(m["parts"])
+        del m["parts"]
+    
+    # Add "plan" field if given (same as manual flow)
+    status = readStatus()
+    if "plan" in status:
+      messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
+    
+    print(f"  Calling LLM API with macro prompt ({model})...")
+    
+    # Run the LLM
+    run_llm(messages, verilog, model)
+    
+    # Check if completed successfully
+    return llm_finished()
+    
+  except Exception as e:
+    automation_errors.append(f"Macro LLM error: {str(e)}")
+    return False
+
+def run_incremental_step():
+  """Run a single incremental step"""
+  # Step 1: Run LLM
+  print("Step 1: Running LLM (incremental)...")
+  if not run_llm_automated():
+    return False
+  
+  # Check if LLM response is incomplete
+  status = readStatus()
+  if status.get("incomplete", False):
+    print("LLM response indicates refactoring is incomplete. Continuing in same step...")
+    return True  # Continue in same step
+  
+  # Step 2: Run FEV
+  print("Step 2: Running FEV...")
+  if not run_fev_automated():
+    return False
+  
+  # Step 3: Accept the refactoring step
+  print("Step 3: Accepting refactoring step...")
+  if not accept_step_automated():
+    return False
+  
+  return True
 
 def run_llm_automated():
   """Run LLM in automated mode, return True if successful"""
@@ -1981,7 +2290,7 @@ def run_llm_automated():
       automation_errors.append(f"Failed to read Verilog file: {str(e)}")
       return False
       
-    # Load messages the same way as manual flow
+    # Load messages - they should already be initialized correctly for macro or individual
     messages_json = "messages." + api + ".json"
     try:
       with open(messages_json) as message_file:
@@ -2062,7 +2371,8 @@ def select_automation_model():
     return False
 
   # Display available models
-  print("Select a model for automation:")
+  macro_info = f" (with {len(macro_prompts)} macro prompts)" if len(macro_prompts) > 0 else ""
+  print(f"Select a model for automation{macro_info}:")
   for i, (name, vendor) in enumerate(important_automation_models):
     print(f"  {i}: ({vendor}) {name}")
   
@@ -2165,6 +2475,140 @@ def show_automation_errors():
       print("Automation model updated.")
     else:
       print("Model selection cancelled.")
+
+def accept_macro_step_automated(macro_id):
+  """Accept a macro refactoring step, creating history entry for the entire macro"""
+  global automation_errors
+  
+  try:
+    status = readStatus()
+    
+    # Check if there are pending manual edits and checkpoint them automatically
+    if diff(working_verilog_file_name, mod_path() + "/" + working_verilog_file_name):
+      print("  Found pending manual edits, checkpointing them...")
+      checkpoint_if_pending()
+      print("  Manual edits checkpointed successfully")
+    
+    if status.get("fev") != "passed":
+      automation_errors.append("FEV has not passed - cannot auto-accept")
+      return False
+    
+    # Check for problematic comments
+    grep_output = os.popen("grep -E 'LLM: (New|Old) Task:' " + working_verilog_file_name).read()
+    grep_output += os.popen("grep -E '//\s*User:' " + working_verilog_file_name).read()
+    
+    if grep_output != "":
+      automation_errors.append("Found comments that need manual review - cannot auto-accept")
+      return False
+    
+    # Accept the macro modification
+    status["accepted"] = True
+    status["macro_id"] = macro_id
+    status["macro_desc"] = macro_prompts[macro_id]["desc"]
+    
+    # Extract substep IDs
+    substep_ids = [substep["id"] for substep in macro_prompts[macro_id]["substeps"]]
+    status["substeps_completed"] = substep_ids
+    writeStatus(status)
+    
+    # Determine what the NEXT step should be
+    next_prompt_id = max(substep_ids) + 1
+    next_macro_id = find_macro_for_prompt(next_prompt_id)
+    
+    if next_macro_id is not None:
+      # Next step is a macro - get substep IDs
+      next_substep_ids = [substep["id"] for substep in macro_prompts[next_macro_id]["substeps"]]
+      init_macro_refactoring_step(next_macro_id, next_substep_ids)
+    else:
+      # Next step is an individual prompt
+      init_refactoring_step()  # This will use the correct prompt_id
+    
+    print("  Macro refactoring step accepted successfully")
+    return True
+      
+  except Exception as e:
+    automation_errors.append(f"Accept macro step error: {str(e)}")
+    return False
+
+def init_macro_refactoring_step(macro_id, substeps):
+  """Initialize refactoring step for a macro prompt (instead of individual prompts)"""
+  global refactoring_step, mod_num, prompt_id
+
+  # Get sticky status from current refactoring step before creating next
+  old_status = readStatus() if refactoring_step > 0 else {}
+    
+  refactoring_step += 1
+  mod_num = -1
+
+  # Create prompt_id.txt for the MACRO, not individual prompts
+  macro_prompt_info = {
+    "id": macro_id,
+    "desc": macro_prompts[macro_id]["desc"],
+    "type": "macro",
+    "substeps": substeps
+  }
+  
+  with open("prompt_id.txt", "w") as file:
+    file.write(json.dumps(macro_prompt_info, indent=2))
+
+  # Make history/# directory and populate it with MACRO info
+  os.mkdir("history/" + str(refactoring_step))
+  os.system("cp prompt_id.txt history/" + str(refactoring_step) + "/")
+  
+  # Create an initial mod_0 directory populated with initial verilog and status
+  status = { 
+    "initial": True, 
+    "fev": "passed",
+    "macro_transformation": True,
+    "macro_id": macro_id,
+    "substeps_completed": substeps
+  }
+  checkpoint(status, old_status)
+
+  # Don't initialize individual messages files - use macro approach
+  print(f"  Created history entry for macro: {macro_prompts[macro_id]['desc']}")
+
+def init_fallback_refactoring_step(original_macro_id):
+  """Initialize refactoring step for individual prompt fallback"""
+  global refactoring_step, mod_num, prompt_id
+  
+  # Get sticky status from current refactoring step before creating next
+  old_status = readStatus() if refactoring_step > 0 else {}
+    
+  refactoring_step += 1
+  mod_num = -1
+
+  # Find the first substep of the failed macro
+  macro = macro_prompts[original_macro_id]
+  substeps = macro.get("substeps", [])
+  if substeps:
+    prompt_id = min(substep["id"] for substep in substeps)  # Start with the first substep ID
+  else:
+    print("Error: No substeps found for macro fallback")
+    return False
+
+  # Write prompt_id.txt for the individual prompt
+  write_prompt_id()
+
+  # Make history/# directory and populate it
+  os.mkdir("history/" + str(refactoring_step))
+  os.system("cp prompt_id.txt history/" + str(refactoring_step) + "/")
+  
+  # Create an initial mod_0 directory with fallback status
+  status = { 
+    "initial": True, 
+    "fev": "passed",
+    "fallback_from_macro": True,
+    "original_macro_id": original_macro_id,
+    "macro_desc": macro["desc"]
+  }
+  checkpoint(status, old_status)
+
+  # Initialize individual messages files for the fallback prompt
+  initialize_messages_json()
+  
+  print(f"  Initialized fallback to individual steps starting with prompt {prompt_id}")
+  return True
 
 # Reset the current prompt/refactoring-step (which is just starting (by reversion, perhaps)) to a
 # fresh one (type "r") or the previous one (type "u"). For "u", update state files.
@@ -2308,6 +2752,43 @@ for id, prompt in enumerate(prompts):
     fail()
   prompts_by_desc[desc] = prompt
 
+# Load macro_prompts.json if it exists
+macro_prompts = []
+macro_prompts_by_desc = {}
+if os.path.exists(repo_dir + "/macro_prompts.json"):
+  with open(repo_dir + "/macro_prompts.json") as file:
+    raw_contents = file.read()
+  json_str = from_extended_json(raw_contents)
+  macro_prompts = json.loads(json_str)
+  # Add an index field to macro prompts
+  for id, macro_prompt in enumerate(macro_prompts):
+    macro_prompt["index"] = id
+    desc = macro_prompt["desc"]
+    if desc in macro_prompts_by_desc:
+      print("Error: Duplicate macro prompt description: " + desc)
+      fail()
+    macro_prompts_by_desc[desc] = macro_prompt
+  print(f"Loaded {len(macro_prompts)} macro prompts")
+
+# Utility functions for macro prompts
+def find_macro_for_prompt(prompt_id):
+  """Find which macro prompt contains the given prompt_id"""
+  for macro_id, macro in enumerate(macro_prompts):
+    if "substeps" in macro:
+      for substep in macro["substeps"]:
+        if substep["id"] == prompt_id:
+          return macro_id
+  return None
+
+def should_use_macro_approach(prompt_id, verilog_code):
+  """Determine if we should try macro approach first"""
+  macro_id = find_macro_for_prompt(prompt_id)
+  if macro_id is None:
+    return False
+  
+  # Always attempt macro approach if macro prompt exists
+  print("  Attempting macro approach")
+  return True
 
 #
 # Determine file names.
@@ -2601,18 +3082,52 @@ while True:
         print("Error: You may only apply a specific prompt when the current prompt was just begun.")
         print("       Use \"u\" to revert to the beginning of the current prompt.")
         continue
-      # List all prompts.
-      print("Prompts:")
-      for i in range(len(prompts)):
-        print(f"  {i}: {prompts[i]['desc']}")
-      print("\nNote: It may be necessary to manually update \"status.json\" to reflect values provided/consumed by LLM/prompts, then exit/restart.\n")
-      # Get the prompt number.
-      print("Enter the prompt number to apply.")
-      print("> ", end="")
-      prompt_id = int(input()) - 1
-      # Reset to that prompt.
-      reset_prompt("r", prompt_id)
-      break  # Display prompt info.
+      
+      # Ask user to choose between macro and individual prompts
+      print("Choose prompt type:")
+      print("  i: Individual prompts")
+      if len(macro_prompts) > 0:
+        print("  m: Macro prompts")
+      
+      choice = prompt_user("Select prompt type", ["i", "m"] if len(macro_prompts) > 0 else ["i"], "i")
+      
+      if choice == "m" and len(macro_prompts) > 0:
+        # List macro prompts
+        print("Macro Prompts:")
+        for i in range(len(macro_prompts)):
+          substep_ids = [substep["id"] for substep in macro_prompts[i]["substeps"]]
+          substep_range = f" (steps {min(substep_ids)}-{max(substep_ids)})" if substep_ids else ""
+          print(f"  {i}: {macro_prompts[i]['desc']}{substep_range}")
+        # Get macro selection
+        try:
+          macro_choice = int(input("Enter macro prompt number: "))
+          if 0 <= macro_choice < len(macro_prompts):
+            # Set prompt_id to first substep of the macro
+            substep_ids = [substep["id"] for substep in macro_prompts[macro_choice]["substeps"]]
+            if substep_ids:
+              prompt_id = min(substep_ids) - 1  # Will be incremented in reset_prompt
+              reset_prompt("r", prompt_id)
+              break
+        except (ValueError, IndexError):
+          print("Invalid selection.")
+          continue
+      else:
+        # Original individual prompt selection
+        print("Individual Prompts:")
+        for i in range(len(prompts)):
+          print(f"  {i}: {prompts[i]['desc']}")
+        
+        print("\nNote: It may be necessary to manually update \"status.json\" to reflect values provided/consumed by LLM/prompts, then exit/restart.\n")
+        
+        try:
+          prompt_choice = int(input("Enter prompt number: "))
+          if 0 <= prompt_choice < len(prompts):
+            prompt_id = prompt_choice - 1  # Will be incremented in reset_prompt
+            reset_prompt("r", prompt_id)
+            break
+        except (ValueError, IndexError):
+          print("Invalid selection.")
+          continue
 
     elif key == "h":
       # Show a history of recent changes in this refactoring step.
