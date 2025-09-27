@@ -1,0 +1,44 @@
+# ChatGPT suggested this in place of fev.sby. It is COMPLETELY UNTESTED!
+# ChatGPT also created constraints/reset_assumptions.sv used by this config.
+
+[options]
+mode bmc
+depth 30
+# For larger refactors, consider:
+# mode prove
+# depth 60   ; increase for deeper pipelines
+# add a second engine (yices/boolector)
+
+[script]
+read_verilog -sv <ORIGINAL_FILE>
+prep -top <MODULE_NAME>
+rename -top gold
+
+read_verilog -sv <MODIFIED_FILE>
+prep -top <MODULE_NAME>
+rename -top gate
+
+# Keep instances so binds can see internal clk/reset.
+miter -equiv -make_assert gold gate miter
+prep -top miter
+
+# Model unknown power-up
+setundef -anyseq
+
+# Reset assumptions bind into gold/gate internals (no need for clk/reset as ports)
+read_verilog -sv constraints/reset_assumptions.sv
+# If your internal names differ from 'clk'/'reset', override here, e.g.:
+# read_verilog -sv -D CLKSIG_GOLD=core_clk -D RESETSIG_GOLD=nrst_sync \
+#                  -D CLKSIG_GATE=core_clk -D RESETSIG_GATE=nrst_sync \
+#                  -D RSTLEN=5 constraints/reset_assumptions.sv
+
+# Notes:
+# - We intentionally avoid time-varying reset scripting here; SBY doesn’t support yosys 'sat -set-at' in engines.
+# - If your DUTs converge after reset automatically, BMC can succeed without explicit reset driving.
+# - For real sequential changes (retiming/encoding), prefer the PROVE settings below.
+
+[engines]
+smtbmc
+# For stronger proofs:
+# smtbmc boolector
+

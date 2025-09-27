@@ -3039,7 +3039,7 @@ while True:
       # Scan the file for comments that should have been removed.
       # Capture grep output to report problematic lines.
       grep_output = os.popen("grep -E 'LLM: (New|Old) Task:' " + working_verilog_file_name).read()
-      grep_output += os.popen("grep -E '//\s*User:' " + working_verilog_file_name).read()
+      grep_output += os.popen(f"grep -E '//\\s*User:' {working_verilog_file_name}").read()
       if diff(working_verilog_file_name, mod_path() + "/" + working_verilog_file_name):
         print("Code edits are pending. You must run FEV (or revert) before accepting the refactoring changes.")
       elif status.get("fev") != "passed":
