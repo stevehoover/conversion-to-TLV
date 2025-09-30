@@ -8,6 +8,7 @@ prep -top <MODULE_NAME>
 
 [collect *]
 
-[strategy simple]
-use sat
+[strategy sby_seq]
+use sby
 depth 10
+engine smtbmc z3
