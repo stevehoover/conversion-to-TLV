@@ -1064,30 +1064,26 @@ def copy_if_different(src, dest):
 
 # Read the prompt ID from the given file.
 def read_prompt_id(file):
-  prompt_id = json.loads(f.read())
-  # Two formats are supported. This is either a number or {"id": number, "desc": "description"}.
-  if type(prompt_id) == dict:
-    # Verify that the description matches the prompt.
-    desc = prompt_id["desc"]
-    id = prompt_id["id"]
-    if prompts[id]["desc"] != desc:
-      # Prompts have changed. See if we can identify the proper ID by looking up the description in prompts_by_desc.
-      prompt_id_str = "{" + str(prompt_id["id"]) + ", " + prompt_id["desc"] + "}"
-      if desc in prompts_by_desc:
-        id = prompts_by_desc[desc]["index"]
-        # Report the correction.
-        print("Warning: Prompts have been changed. Corrected ID " + prompt_id_str + " to " + str(id) + " for current prompt: \"" + desc + "\".")
-      else:
-        print("\nError: The description in \"prompt_id.txt\" does not match any prompt description in prompts.json.")
-        print("       The description in \"prompt_id.txt\" is: \"" + desc + "\".")
-        print("       The descriptions for ID " + prompt_id_str + " in prompts.json is:" + prompts[prompt_id]["desc"] + "\".")
-        # Continue?
-        ch = prompt_user("Continue with the current prompt ID?", {"y", "n"}, "n")
-        if ch == "n":
-          fail()
-    # Correct the prompt ID.
-    prompt_id = id
-  return prompt_id
+  prompt_data = json.loads(file.read())
+  
+  # Handle both old format (number) and new format (object)
+  if type(prompt_data) == dict:
+    if "type" in prompt_data and prompt_data["type"] == "macro":
+      # This is a macro prompt reference - convert to use first substep
+      macro_id = prompt_data["id"]
+      if macro_id < len(macro_prompts) and "substeps" in macro_prompts[macro_id]:
+        substeps = macro_prompts[macro_id]["substeps"]
+        if substeps:
+          return substeps[0]["id"]  # Return first substep ID
+    elif "id" in prompt_data:
+      # Regular prompt format
+      return prompt_data["id"]
+  elif type(prompt_data) == int:
+    # Old numeric format
+    return prompt_data
+  
+  print("Error: Invalid prompt_id format")
+  return 0
 
 
 
@@ -1341,28 +1337,32 @@ def initialize_messages_json():
       # Process with M5.
       system = processWithM5("system_message", api, system, status)
 
-      # Initialize messages.<api>.json.
+      # Initialize messages.<api>.json using substep prompt
       with open(messages_json, "w") as message_file:
-        prompt = prompts[prompt_id]["prompt"]
-        # Search prompt string for "m5_" and use M5 if found.
-        if prompt.find("m5_") != -1:
-          prompt = processWithM5("prompt", "api", prompt, status)
-        # Add "needs" fields to the prompt.
-        if "needs" in prompts[prompt_id]:
-          prompt += "\n\nNote that the following \"extra fields\" have been determined to characterize the Verilog code:"
-          for field in prompts[prompt_id]["needs"]:
-            value = str(status.get(field, "UNKNOWN"))
-            if value == "UNKNOWN":
-              print("Error: The field \"" + field + "\" is needed by the prompt but is not in the status. Using \"UNKNOWN\".")
-            prompt += "\n   " + field + ": " + value
-        message_obj = {}
-        # If prompt has a "background" field, add it (first) to the message.
-        if "background" in prompts[prompt_id]:
-          message_obj["background"] = prompts[prompt_id]["background"]
-        message_obj["prompt"] = prompt
-        message = get_message_bundler_for_api(api).obj_to_request(message_obj)
-        ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(api, system, message), indent=4))
-        message_file.write(ejson_messages)
+        if prompt_id < len(prompts):
+          prompt = prompts[prompt_id]["prompt"]
+          # Search prompt string for "m5_" and use M5 if found.
+          if prompt.find("m5_") != -1:
+            prompt = processWithM5("prompt", "api", prompt, status)
+          # Add "needs" fields to the prompt.
+          if "needs" in prompts[prompt_id]:
+            prompt += "\n\nNote that the following \"extra fields\" have been determined to characterize the Verilog code:"
+            for field in prompts[prompt_id]["needs"]:
+              value = str(status.get(field, "UNKNOWN"))
+              if value == "UNKNOWN":
+                print("Error: The field \"" + field + "\" is needed by the prompt but is not in the status. Using \"UNKNOWN\".")
+              prompt += "\n   " + field + ": " + value
+          message_obj = {}
+          # If prompt has a "background" field, add it (first) to the message.
+          if "background" in prompts[prompt_id]:
+            message_obj["background"] = prompts[prompt_id]["background"]
+          message_obj["prompt"] = prompt
+          message = get_message_bundler_for_api(api).obj_to_request(message_obj)
+          ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(api, system, message), indent=4))
+          message_file.write(ejson_messages)
+        else:
+          print(f"Error: Invalid prompt_id {prompt_id}")
+          error = True
     except Exception as e:
       print("Error: Failed to initialize messages." + api + ".json due to: " + str(e))
       error = True
@@ -2736,39 +2736,59 @@ if not os.path.exists(repo_dir + "/fev.sby") or not os.path.exists(repo_dir + "/
   print("Error: Conversion repository does not contain fev.sby or fev.eqy.")
   usage()
 
-# Read prompts.json.
-# prompts.json is a slight extension to JSON supporting newlines in strings. Any newlines within quotes are replaced with '\n'.
-with open(repo_dir + "/prompts.json") as file:
-  raw_contents = file.read()
-json_str = from_extended_json(raw_contents)
-prompts = json.loads(json_str)
-# Add an index field to prompts. Also provide a dictionary of prompts indexed by desc.
-prompts_by_desc = {}
-for id, prompt in enumerate(prompts):
-  prompt["index"] = id
-  desc = prompt["desc"]
-  if desc in prompts_by_desc:
-    print("Error: Duplicate prompt description: " + desc)
-    fail()
-  prompts_by_desc[desc] = prompt
-
-# Load macro_prompts.json if it exists
+# Load macro_prompts.json and extract substeps as the primary prompts
 macro_prompts = []
-macro_prompts_by_desc = {}
+prompts = []  # This will now contain the substeps
+prompts_by_desc = {}
+
 if os.path.exists(repo_dir + "/macro_prompts.json"):
   with open(repo_dir + "/macro_prompts.json") as file:
     raw_contents = file.read()
   json_str = from_extended_json(raw_contents)
   macro_prompts = json.loads(json_str)
-  # Add an index field to macro prompts
-  for id, macro_prompt in enumerate(macro_prompts):
-    macro_prompt["index"] = id
-    desc = macro_prompt["desc"]
-    if desc in macro_prompts_by_desc:
-      print("Error: Duplicate macro prompt description: " + desc)
-      fail()
-    macro_prompts_by_desc[desc] = macro_prompt
-  print(f"Loaded {len(macro_prompts)} macro prompts")
+  
+  # Extract all substeps and create the prompts array
+  for macro_id, macro_prompt in enumerate(macro_prompts):
+    macro_prompt["index"] = macro_id
+    if "substeps" in macro_prompt:
+      for substep in macro_prompt["substeps"]:
+        # Copy the substep and add it to prompts at the correct index
+        prompt_entry = substep.copy()
+        prompt_index = substep["id"]
+        
+        # Ensure prompts array is large enough
+        while len(prompts) <= prompt_index:
+          prompts.append(None)
+        
+        # Add the substep as a prompt
+        prompts[prompt_index] = prompt_entry
+        prompts[prompt_index]["index"] = prompt_index
+
+        # Add to prompts_by_desc - desc should already exist in substep
+        if "desc" in prompt_entry:
+          desc = prompt_entry["desc"]
+          if desc in prompts_by_desc:
+            print("Error: Duplicate prompt description: " + desc)
+            fail()
+          prompts_by_desc[desc] = prompt_entry
+        else:
+          print(f"Warning: Substep {substep['id']} missing 'desc' field")
+
+    if len(prompts) == 0 or prompts[0] is None:
+      # Insert a dummy prompt at index 0 if needed
+      while len(prompts) <= 0:
+        prompts.append(None)
+      if prompts[0] is None:
+        prompts[0] = {
+          "id": 0,
+          "index": 0,
+          "desc": "Initial prompt (unused)",
+          "prompt": "This is a placeholder prompt."
+        }
+  print(f"Loaded {len(macro_prompts)} macro prompts with {len([p for p in prompts if p is not None])} total substeps")
+else:
+  print("Error: macro_prompts.json not found. This file is required.")
+  fail()
 
 # Utility functions for macro prompts
 def find_macro_for_prompt(prompt_id):
@@ -2779,6 +2799,12 @@ def find_macro_for_prompt(prompt_id):
         if substep["id"] == prompt_id:
           return macro_id
   return None
+
+def get_original_prompt_id(current_prompt_id):
+  """Get the original prompt ID from the current prompt ID"""
+  if current_prompt_id < len(prompts):
+    return prompts[current_prompt_id].get("original_id", current_prompt_id)
+  return current_prompt_id
 
 def should_use_macro_approach(prompt_id, verilog_code):
   """Determine if we should try macro approach first"""
@@ -2870,13 +2896,13 @@ else:
         prompt_id = read_prompt_id(f)
     cn -= 1
   
-  # If messages.<api>.json is/are older than prompts.json or default_system_message.txt, reinitialize it/them.
+  # If messages.<api>.json is/are older than macro_prompts.json or default_system_message.txt, reinitialize it/them.
   # For every API ("gpt", "o"), initialize messages.<api>.json.
   reinitialize = False
   for api in apis:
     messages_json = "messages." + api + ".json"
 
-    if (not os.path.exists(messages_json)) or (os.path.getmtime(messages_json) < os.path.getmtime(repo_dir + "/prompts.json")) or (os.path.getmtime(messages_json) < os.path.getmtime(repo_dir + "/default_system_message.txt")):
+    if (not os.path.exists(messages_json)) or (os.path.getmtime(messages_json) < os.path.getmtime(repo_dir + "/macro_prompts.json")) or (os.path.getmtime(messages_json) < os.path.getmtime(repo_dir + "/default_system_message.txt")):
       reinitialize = True
   if reinitialize:
     # Confirm.
@@ -3112,10 +3138,11 @@ while True:
           print("Invalid selection.")
           continue
       else:
-        # Original individual prompt selection
-        print("Individual Prompts:")
+        # Show individual substep prompts
+        print("Individual Substep Prompts:")
         for i in range(len(prompts)):
-          print(f"  {i}: {prompts[i]['desc']}")
+          original_id = prompts[i].get("original_id", i)
+          print(f"  {i}: {prompts[i]['desc']} (original ID: {original_id})")
         
         print("\nNote: It may be necessary to manually update \"status.json\" to reflect values provided/consumed by LLM/prompts, then exit/restart.\n")
         
