@@ -1,20 +1,30 @@
 # A script for refactoring a Verilog module, then converting it to TL-Verilog.
-# The refactoring steps are performed by an LLM such as ChatGPT-4 via its API.
-# Manual refactoring is also possible. All refactoring steps are formally verified using SymbiYosys.
+# The refactoring steps are performed by LLMs (ChatGPT, Claude, Gemini) via their APIs with formal verification.
+# Both macro-level and incremental refactoring approaches are supported, with full automation capabilities.
+# All refactoring steps are formally verified using SymbiYosys/EQY for correctness.
 
 # Usage:
 # python3 convert.py
 #   This begins or continues the conversion process for the only *.v file in the current directory.
+#   The script supports both interactive manual mode and fully automated mode.
 
+# ARCHITECTURE OVERVIEW:
+# The system uses a two-tier prompt architecture:
+# 1. Macro Prompts: High-level transformations that can handle multiple substeps at once
+# 2. Individual Substep Prompts: Granular transformations for incremental progress
+
+# CORE FILES:
 # This script works with these files:
 #  - <module_name>_orig.v: The trusted Verilog module to convert. This is the original file for the current conversion step.
 #  - <module_name>.v: The current WIP refactored/modified Verilog module, against which FEV will be run.
+#  - macro_prompts.json: Defines high-level transformation prompts with substeps
 #  - prompt_id.txt: A file containing, e.g. {"id": 5, "desc": "Update clocks"}, the ID and desc field of the current prompt.
 #                  (Formerly, this was just an ID number.) (Note, the actual prompt may have been modified manually.)
 #  - messages.<api>.json: The messages to be sent to the LLM API (as in the ChatGPT API).
 #  - current/feved.v: A link to the most-recent successfully FEVed Verilog file.
 #  - current/chkpt.v: A link to the last checkpointed Verilog file.
-# Additionally, these files may be created and captured in the process:
+
+# TEMPORARY FILES (created during processing):
 #  - tmp/fev.sby & tmp/fev.eqy: The FEV script for this conversion job.
 #  - tmp/m5/*: Temporary files used for M5 preprocessing of a prompt.
 #  - tmp/pre_llm.v: The Verilog file sent to the LLM API.
@@ -25,6 +35,16 @@
 #  - tmp/llm.v: The updated (or not) Verilog (llm_upd.v or pre_llm.v).
 #  - llm_response.txt: The LLM response file.
 #
+# AUTOMATION FEATURES:
+# The script supports full automation mode that:
+# - Attempts macro transformations first for efficiency
+# - Falls back to incremental steps automatically
+# - Runs FEV verification after each change
+# - Auto-accepts changes that pass verification
+# - Handles multi-step transformations with progress tracking
+# - Supports multiple LLM APIs (OpenAI, Claude, Gemini)
+
+# HISTORY TRACKING:
 # A history of all refactoring steps is stored in history/#, where "#" is the "refactoring step", starting with history/1.
 # This directory is initialized when the step is begun, and fully populated when the refactoring change is accepted.
 # Contents includes:
@@ -48,35 +68,45 @@
 #
 # history/#/mod_# can also be a symlink to a prior history/#/mod_#, recording a code reversion. A reversion will not reference
 # another reversion.
-#
-# The status.json file reflects the status of the modification, including the following (and others that are sticky):
+
+# STATUS TRACKING:
+# Each modification tracks comprehensive metadata:
 #   {
-#     "by": "human"|"llm",
-#     "api": ... if "by" is "llm",
-#     "compile": "passed"|"failed" (or non-existent if not compiled),
-#     "fev": "passed"|"failed" (or non-existent if not run),
-#     "incomplete": true|false A sticky field (held for each checkpoint of the refactoring step) assigned or updated by each LLM run,
-#                              indicating whether the LLM response was incomplete.
-#     "accepted": true|non-existent Exists as true for the final modification of a refactoring step that was accepted.
+#     "by": "human"|"llm",           // Source of modification
+#     "api": "...",                  // API used if LLM-generated
+#     "model": "...",                // Specific model used
+#     "compile": "passed"|"failed",  // Compilation status
+#     "fev": "passed"|"failed",      // Formal verification status
+#     "incomplete": true|false,      // Whether refactoring step needs continuation
+#     "accepted": true,              // Final acceptance of refactoring step
+#     "plan": "...",                 // LLM's plan for completing incomplete work
+#     "macro_id": N,                 // ID of macro prompt if used
+#     "substeps_completed": [...]    // List of substeps handled by macro
 #   }
 #
 # With each rejected refactoring step, a new candidate is captured under a new candidate number under the next history number directory.
+
+# PROMPT SYSTEM ARCHITECTURE:
+# The system uses <repo>/macro_prompts.json which contains:
+# - High-level macro prompts that can handle multiple transformation steps
+# - Substeps within each macro that define granular transformations
+# - Individual prompts are extracted from macro substeps at runtime
+# 
+# Each macro prompt contains:
+#   - desc: Description of the high-level transformation
+#   - prompt: The macro-level prompt text (can use M5 preprocessing)
+#   - substeps: Array of individual transformation steps with:
+#     - id: Unique identifier for the substep
+#     - desc: Description of the individual step
+#     - prompt: Individual step prompt text
+#     - must_produce/may_produce: Required/optional response fields
+#     - if/unless: Conditional execution logic
+#     - needs/consumes: Field dependencies
 #
-# <repo>/prompts.json contains the default prompts used for refactoring steps as a JSON array of objects with the following fields:
-#   - desc: a brief description of the refactoring step
-#   - backgroud: (opt) background information that may be relevant to this refactoring step
-#   - prompt: prompt string, preprocess using M5 (if necessary), passing M5 variables from sticky fields
-#   - must_produce: (opt) an array of strings representing sticky fields that the LLM must produce in its response
-#   TODO: Eliminate "may_produce" (since JSON schema has only required fields).
-#   - may_produce: (opt) an array of strings representing sticky fields that the LLM may produce in its response.
-#   - if: (opt) an object with fields that represent values of sticky fields; if given and any match, this prompt will be used ("" matches undefined)
-#         Each field may have an array value rather than a string, in which case any array value may match.
-#   - unless: (opt) an object with fields that represent values of sticky fields; if given, unless all match, this prompt will be used ("" matches undefined)
-#             Each field may have an array value rather than a string, in which case any array value may match.
-#   - needs: (opt) an array of strings representing sticky fields whose values are to be reported in the prompt
-#   - consumes: (opt) an array of strings representing sticky fields that are consumed by this prompt
-#   TODO: Is "consumes" implemented? Do not consume if "incomplete". Consume even if skipped.
-#
+# The prompts[] array is dynamically populated from macro substeps during initialization.
+# This allows the system to attempt efficient macro-level transformations first,
+# then fall back to incremental substep processing when needed.
+
 # When launched, this script first determines the current state of the conversions process. This state is:
 #   - The current candidate:
 #     - The current refactoring step, which is the latest history/#.
