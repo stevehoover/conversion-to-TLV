@@ -1767,6 +1767,52 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       copy_if_different("tmp/pre_llm.v", working_verilog_file_name)
       print("Changes rejected. Restored to code prior to running LLM.")
 
+def run_manual_macro_llm(macro_id, model, llm_api):
+    """Run LLM with macro prompt in manual mode"""
+    try:
+        macro = macro_prompts[macro_id]
+        api = models[model]["api"]
+        
+        # Initialize macro messages
+        initialize_macro_messages_json(macro_id)
+        
+        # Get current Verilog content
+        with open(working_verilog_file_name) as verilog_file:
+            verilog = verilog_file.read().strip() + "\n"
+        
+        # Load macro messages
+        messages_json = "messages." + api + ".json"
+        with open(messages_json) as message_file:
+            msg_file_str = message_file.read()
+            msg_json = from_extended_json(msg_file_str)
+            messages = json.loads(msg_json)
+        
+        # Convert Gemini-style messages if needed
+        for m in messages:
+            if "parts" in m and "content" not in m:
+                m["content"] = "".join(m["parts"])
+                del m["parts"]
+        
+        # Add plan if it exists
+        status = readStatus()
+        if "plan" in status:
+            messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
+        
+        # Run the LLM
+        run_llm(messages, verilog, model)
+        
+        # Check if macro was completed successfully
+        new_status = readStatus()
+        if not new_status.get("incomplete", False):
+            print("Macro transformation completed.")
+            return True
+        else:
+            print("Macro transformation incomplete - will continue incrementally.")
+            return False
+            
+    except Exception as e:
+        print(f"Error running macro LLM: {str(e)}")
+        return False
 
 #
 # FEV
@@ -2530,6 +2576,69 @@ def accept_macro_step_automated(macro_id):
     automation_errors.append(f"Accept macro step error: {str(e)}")
     return False
 
+def accept_manual_macro_step(macro_id):
+    """Accept a macro step in manual mode and update prompt_id accordingly"""
+    global prompt_id
+    
+    try:
+        status = readStatus()
+        
+        # Check if FEV passed
+        if status.get("fev") != "passed":
+            print("Error: FEV must pass before accepting macro step.")
+            return False
+        
+        # Check for problematic comments
+        grep_output = os.popen("grep -E 'LLM: (New|Old) Task:' " + working_verilog_file_name).read()
+        grep_output += os.popen("grep -E '//\s*User:' " + working_verilog_file_name).read()
+        
+        if grep_output != "":
+            print("Warning: Found comments that may need manual review:")
+            print(grep_output)
+            ch = prompt_user("Accept anyway?", {"y", "n"}, "n")
+            if ch != "y":
+                return False
+        
+        # Accept the macro modification
+        status["accepted"] = True
+        status["macro_id"] = macro_id
+        status["macro_desc"] = macro_prompts[macro_id]["desc"]
+
+        # Extract substep IDs to skip
+        substep_ids = [substep["id"] for substep in macro_prompts[macro_id]["substeps"]]
+        status["substeps_completed"] = substep_ids
+        writeStatus(status)
+        
+        # Update prompt_id to skip all substeps
+        prompt_id = max(substep_ids)  # Set to last substep, will be incremented in init_refactoring_step
+        
+        print(f"Macro step accepted. Skipping substeps {substep_ids}")
+        return True
+        
+    except Exception as e:
+        print(f"Error accepting macro step: {str(e)}")
+        return False
+
+def update_prompt_id_for_macro(macro_id):
+    """Update prompt_id.txt to reflect that we're working on a macro approach"""
+    
+    # Create prompt_id entry showing current macro work
+    macro_work_info = {
+        "id": macro_id,
+        "desc": macro_prompts[macro_id]["desc"],
+        "type": "macro",
+        "substeps": [substep["id"] for substep in macro_prompts[macro_id]["substeps"]]
+    }
+    
+    with open("prompt_id.txt", "w") as file:
+        file.write(json.dumps(macro_work_info, indent=2))
+    
+    # Update history directory as well
+    history_dir = f"history/{refactoring_step}"
+    if os.path.exists(history_dir):
+        with open(f"{history_dir}/prompt_id.txt", "w") as file:
+            file.write(json.dumps(macro_work_info, indent=2))
+        
 def init_macro_refactoring_step(macro_id, substeps):
   """Initialize refactoring step for a macro prompt (instead of individual prompts)"""
   global refactoring_step, mod_num, prompt_id
@@ -2700,7 +2809,7 @@ json_schema = {
 
 # Response fields.
 response_fields = {"overview", "verilog", "notes", "issues", "incomplete", "plan", "extra_fields"}    # ("incomplete" is sticky between LLM runs, so it has special treatment.)
-status_fields = {"by", "api", "compile", "fev", "modified", "incomplete", "accepted", "plan"}  # Status fields that are not sticky.
+status_fields = {"by", "api", "compile", "fev", "modified", "incomplete", "accepted", "plan", "clock", "macro_completed", "macro_id", "macro_desc", "substeps_completed", "macro_transformation", "fallback_from_macro", "original_macro_id"}  # Status fields that are not sticky.
 llm_status_fields = {"incomplete", "plan"}   # These are empty for a refactoring step and updated by LLM runs.
 # (Fields not listed above are sticky.)
 
@@ -3027,28 +3136,66 @@ while True:
           print("Aborted. Choose a different command.")
           do_it = False
       if do_it:
-        with open(messages_json) as message_file:
-          with open(working_verilog_file_name) as verilog_file:
-            verilog = verilog_file.read()
-            # Strip leading and trailing whitespace, then add trailing newline.
-            verilog = verilog.strip() + "\n"
-            msg_file_str = message_file.read()
-            msg_json = from_extended_json(msg_file_str)
-            ## Dump the JSON to a file for debugging.
-            #with open("tmp/messages_debug.json", "w") as file:
-            #  file.write(msg_json)
-            messages = json.loads(msg_json)
-            # Convert Gemini-style messages (with "parts") to OpenAI-style format (with "content"),
-            # to ensure compatibility across API providers.
-            for m in messages:
-                if "parts" in m and "content" not in m:
-                    m["content"] = "".join(m["parts"])  # assumes parts is a list of strings
-                    del m["parts"]
-            # Add "plan" field if given.
+        # Ask user to choose between macro and individual prompts
+        macro_id = find_macro_for_prompt(prompt_id)
+        use_macro = False
+        
+        if macro_id is not None and len(macro_prompts) > 0:
+          print("\nPrompt approach options:")
+          print(f"  i: Individual prompt - {prompts[prompt_id]['desc']}")
+          print(f"  m: Macro prompt - {macro_prompts[macro_id]['desc']}")
+          substep_ids = [substep["id"] for substep in macro_prompts[macro_id]["substeps"]]
+          print(f"      (Covers substeps {min(substep_ids)}-{max(substep_ids)})")
+          
+          approach = prompt_user("Choose approach", ["i", "m"], "i")
+          use_macro = (approach == "m")
+        
+        if use_macro:
+          # Use macro approach
+          print(f"Using macro approach: {macro_prompts[macro_id]['desc']}")
+          # Update prompt_id.txt to reflect macro approach IMMEDIATELY
+          update_prompt_id_for_macro(macro_id)
+          # Run macro LLM
+          macro_success = run_manual_macro_llm(macro_id, model, llm_api)
+          
+          if macro_success:
+            # Macro completed successfully
+            print("Macro LLM completed successfully!")
+            # Set a flag to indicate macro completion for accept logic
             status = readStatus()
-            if "plan" in status:
-              messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
-            run_llm(messages, verilog, model)
+            status["macro_completed"] = True
+            status["macro_id"] = macro_id
+            writeStatus(status)
+          else:
+            # Macro incomplete, continue with normal flow
+            print("Macro approach incomplete. Continuing with normal individual prompt flow.")
+            # Reinitialize with individual prompt
+            write_prompt_id()
+            initialize_messages_json()
+        else:
+          # Use individual approach
+          with open(messages_json) as message_file:
+            with open(working_verilog_file_name) as verilog_file:
+              verilog = verilog_file.read()
+              # Strip leading and trailing whitespace, then add trailing newline.
+              verilog = verilog.strip() + "\n"
+              msg_file_str = message_file.read()
+              msg_json = from_extended_json(msg_file_str)
+              ## Dump the JSON to a file for debugging.
+              #with open("tmp/messages_debug.json", "w") as file:
+              #  file.write(msg_json)
+              messages = json.loads(msg_json)
+              # Convert Gemini-style messages (with "parts") to OpenAI-style format (with "content"),
+              # to ensure compatibility across API providers.
+              for m in messages:
+                  if "parts" in m and "content" not in m:
+                      m["content"] = "".join(m["parts"])  # assumes parts is a list of strings
+                      del m["parts"]
+              # Add "plan" field if given.
+              status = readStatus()
+              if "plan" in status:
+                messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
+              run_llm(messages, verilog, model)
     elif key == "e":
       fev_current(True)
     elif key == "f":
@@ -3062,6 +3209,10 @@ while True:
       confirm = True
       do_it = False
       last_mod = most_recent_mod()
+
+      # Check if this is a completed macro
+      is_macro_completed = status.get("macro_completed", False)
+      macro_id = status.get("macro_id")
       # Scan the file for comments that should have been removed.
       # Capture grep output to report problematic lines.
       grep_output = os.popen("grep -E 'LLM: (New|Old) Task:' " + working_verilog_file_name).read()
@@ -3093,13 +3244,23 @@ while True:
           print("Choose a different command.")
       
       if do_it:
-        # Accept the modification.
-        # Capture working files in history/#/.
-        status["accepted"] = True
-        writeStatus(status)
-        # Next refactoring step.
-        init_refactoring_step()
-        break
+        if is_macro_completed and macro_id is not None:
+          # Accept macro step and skip substeps
+          if accept_manual_macro_step(macro_id):
+            # Move to next refactoring step
+            init_refactoring_step()
+            break
+          else:
+            print("Failed to accept macro step.")
+        else:
+          # Accept normal individual step
+          # Accept the modification.
+          # Capture working files in history/#/.
+          status["accepted"] = True
+          writeStatus(status)
+          # Next refactoring step.
+          init_refactoring_step()
+          break
 
     elif key == "p":
       # Adjust the current prompt, skipping ahead or jumping back, chosen from a complete listing.
