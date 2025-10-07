@@ -129,7 +129,6 @@ import subprocess
 from openai import OpenAI
 import sys
 import termios
-import tty
 import atexit
 import signal
 from select import select
@@ -974,9 +973,6 @@ def usage():
 def fail():
   sys.exit(1)
 
-## Capture the current terminal settings before setting raw mode
-#default_settings = termios.tcgetattr(sys.stdin)
-##old_settings = termios.tcgetattr(sys.stdin)
 
 def cleanup():
   print("Exiting cleanly.")
@@ -1096,7 +1092,7 @@ def copy_if_different(src, dest):
 def read_prompt_id(file):
   prompt_data = json.loads(file.read())
   
-  # Handle both old format (number) and new format (object)
+  # Handle different prompt_id.txt formats
   if type(prompt_data) == dict:
     if "type" in prompt_data and prompt_data["type"] == "macro":
       # This is a macro prompt reference - convert to use first substep
@@ -1106,10 +1102,10 @@ def read_prompt_id(file):
         if substeps:
           return substeps[0]["id"]  # Return first substep ID
     elif "id" in prompt_data:
-      # Regular prompt format
+      # Regular prompt format with ID field
       return prompt_data["id"]
   elif type(prompt_data) == int:
-    # Old numeric format
+    # Numeric format - direct prompt ID
     return prompt_data
   
   print("Error: Invalid prompt_id format")
@@ -1341,71 +1337,12 @@ automation_model = None
 # This is specific to the API, but we do this when initializing the refactoring step (before we know the API)
 # to enable human edits before the API call. So we create a different messages.<api>.json file for each possible
 # API.
-def initialize_messages_json():
+def initialize_messages_json(macro_id=None):
+  """Initialize messages.<api>.json with either individual prompt or macro prompt content"""
   status = readStatus()
   error = False
 
-  # For every API, initialize messages.<api>.json.
-  for api in apis:
-    try:
-      status['api'] = api
-      messages_json = "messages." + api + ".json"
-
-      # Dynamically create the correct LLM API instance
-      if api.startswith(("gpt3", "gpt4", "gpt5", "o", "o-simple")):
-        llm_api = OpenAI_API()
-      elif api.startswith("gemini"):
-        llm_api = Gemini_API()
-      elif api == "claude":
-        llm_api = Claude_API()
-      else:
-        raise ValueError(f"Unknown or unsupported API type: {api}")
-
-      # Read the system message from <repo>/default_system_message.txt.
-      with open(repo_dir + "/default_system_message.txt") as file:
-        system = file.read()
-      # Process with M5.
-      system = processWithM5("system_message", api, system, status)
-
-      # Initialize messages.<api>.json using substep prompt
-      with open(messages_json, "w") as message_file:
-        if prompt_id < len(prompts):
-          prompt = prompts[prompt_id]["prompt"]
-          # Search prompt string for "m5_" and use M5 if found.
-          if prompt.find("m5_") != -1:
-            prompt = processWithM5("prompt", "api", prompt, status)
-          # Add "needs" fields to the prompt.
-          if "needs" in prompts[prompt_id]:
-            prompt += "\n\nNote that the following \"extra fields\" have been determined to characterize the Verilog code:"
-            for field in prompts[prompt_id]["needs"]:
-              value = str(status.get(field, "UNKNOWN"))
-              if value == "UNKNOWN":
-                print("Error: The field \"" + field + "\" is needed by the prompt but is not in the status. Using \"UNKNOWN\".")
-              prompt += "\n   " + field + ": " + value
-          message_obj = {}
-          # If prompt has a "background" field, add it (first) to the message.
-          if "background" in prompts[prompt_id]:
-            message_obj["background"] = prompts[prompt_id]["background"]
-          message_obj["prompt"] = prompt
-          message = get_message_bundler_for_api(api).obj_to_request(message_obj)
-          ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(api, system, message), indent=4))
-          message_file.write(ejson_messages)
-        else:
-          print(f"Error: Invalid prompt_id {prompt_id}")
-          error = True
-    except Exception as e:
-      print("Error: Failed to initialize messages." + api + ".json due to: " + str(e))
-      error = True
-  if error:
-    fail()
-
-def initialize_macro_messages_json(macro_id):
-  """Initialize messages.<api>.json with macro prompt content"""
-  status = readStatus()
-  error = False
-  macro = macro_prompts[macro_id] 
-
-  # For every API, initialize messages.<api>.json with macro prompt
+  # For every API, initialize messages.<api>.json
   for api in apis:
     try:
       status['api'] = api
@@ -1427,61 +1364,84 @@ def initialize_macro_messages_json(macro_id):
       # Process with M5
       system = processWithM5("system_message", api, system, status)
 
-      # Use macro prompt instead of individual prompt
-      prompt = macro["prompt"]
-      
-      # Add must_produce fields to the macro prompt if present
-      if "must_produce" in macro:
-        prompt += "\n\nNote that this macro transformation must produce the following extra fields:"
-        for field in macro["must_produce"]:
-          prompt += f"\n   {field}: (required field)"
-      
-      # Add may_produce fields if present
-      if "may_produce" in macro:
-        prompt += "\n\nNote that this macro transformation may produce the following extra fields:"
-        for field in macro["may_produce"]:
-          prompt += f"\n   {field}: (optional field)"
-      
-      # Add "needs" fields if present (from current status)
-      needs_fields = []
-      # Collect needs from all substeps
-      for substep in macro.get("substeps", []):
-        # Get needs from the individual prompts referenced by substeps
-        substep_id = substep["id"]
-        if substep_id < len(prompts) and "needs" in prompts[substep_id]:
-          needs_fields.extend(prompts[substep_id]["needs"])
-      
-      # Remove duplicates and add to prompt
-      needs_fields = list(set(needs_fields))
+      # Determine prompt content based on whether macro_id is provided
+      if macro_id is not None:
+        # Use macro prompt
+        macro = macro_prompts[macro_id]
+        prompt = macro["prompt"]
+        
+        # Add must_produce fields to the macro prompt if present
+        if "must_produce" in macro:
+          prompt += "\n\nNote that this macro transformation must produce the following extra fields:"
+          for field in macro["must_produce"]:
+            prompt += f"\n   {field}: (required field)"
+        
+        # Add may_produce fields if present
+        if "may_produce" in macro:
+          prompt += "\n\nNote that this macro transformation may produce the following extra fields:"
+          for field in macro["may_produce"]:
+            prompt += f"\n   {field}: (optional field)"
+        
+        # Collect needs from all substeps for macro prompts
+        needs_fields = []
+        for substep in macro.get("substeps", []):
+          substep_id = substep["id"]
+          if substep_id < len(prompts) and "needs" in prompts[substep_id]:
+            needs_fields.extend(prompts[substep_id]["needs"])
+        needs_fields = list(set(needs_fields))  # Remove duplicates
+        
+        # Search prompt string for "m5_" and use M5 if found
+        if prompt.find("m5_") != -1:
+          prompt = processWithM5("macro_prompt", api, prompt, status)
+      else:
+        # Use individual substep prompt
+        if prompt_id >= len(prompts):
+          print(f"Error: Invalid prompt_id {prompt_id}")
+          error = True
+          continue
+          
+        prompt = prompts[prompt_id]["prompt"]
+        
+        # Search prompt string for "m5_" and use M5 if found
+        if prompt.find("m5_") != -1:
+          prompt = processWithM5("prompt", api, prompt, status)
+        
+        # Get needs fields from individual prompt
+        needs_fields = prompts[prompt_id].get("needs", [])
+
+      # Add "needs" fields to the prompt if present
       if needs_fields:
         prompt += "\n\nNote that the following \"extra fields\" have been determined to characterize the Verilog code:"
         for field in needs_fields:
           value = str(status.get(field, "UNKNOWN"))
           if value == "UNKNOWN":
-            print(f"Warning: The field \"{field}\" is needed by the macro prompt but is not in the status. Using \"UNKNOWN\".")
+            field_type = "macro prompt" if macro_id is not None else "prompt"
+            print(f"Warning: The field \"{field}\" is needed by the {field_type} but is not in the status. Using \"UNKNOWN\".")
           prompt += "\n   " + field + ": " + value
 
-      # Search prompt string for "m5_" and use M5 if found
-      if prompt.find("m5_") != -1:
-        prompt = processWithM5("macro_prompt", api, prompt, status)
-
+      # Create message object
       message_obj = {}
-      # Add macro prompt content
+      
+      # Add background field if present (only for individual prompts)
+      if macro_id is None and "background" in prompts[prompt_id]:
+        message_obj["background"] = prompts[prompt_id]["background"]
+      
       message_obj["prompt"] = prompt
       message = get_message_bundler_for_api(api).obj_to_request(message_obj)
       ejson_messages = to_extended_json(json.dumps(llm_api.initPrompt(api, system, message), indent=4))
       
-      # Write the macro-based messages file
+      # Write the messages file
       with open(messages_json, "w") as message_file:
         message_file.write(ejson_messages)
         
     except Exception as e:
-      print("Error: Failed to initialize macro messages." + api + ".json due to: " + str(e))
+      prompt_type = "macro" if macro_id is not None else "individual"
+      print(f"Error: Failed to initialize {prompt_type} messages." + api + ".json due to: " + str(e))
       error = True
       
   if error:
     fail()
-    
+
 # Write prompt_id.txt.
 def write_prompt_id():
   with open("prompt_id.txt", "w") as file:
@@ -1621,13 +1581,42 @@ def processWithM5(what, api, body, status):
 # Checkpoint any manual edits, run LLM, and checkpoint the result if successful. Return nothing.
 # messages: The messages.<api>.json object in OpenAI format.
 # verilog: The current Verilog file contents.
-def run_llm(messages, verilog, model="gpt-3.5-turbo"):
+# macro_id: If provided, this is a macro prompt run
+def run_llm(messages, verilog, model="gpt-3.5-turbo", macro_id=None):
 
   # Run the LLM, passing the messages.<api>.json and verilog file contents.
 
+  # If this is a macro prompt, reinitialize messages with macro content
+  if macro_id is not None:
+    print(f"Reinitializing messages for macro prompt {macro_id}...")
+    initialize_messages_json(macro_id)
+    
+    # Reload the newly initialized macro messages
+    api = models[model]["api"]
+    messages_json = "messages." + api + ".json"
+    with open(messages_json) as message_file:
+      msg_file_str = message_file.read()
+      msg_json = from_extended_json(msg_file_str)
+      messages = json.loads(msg_json)
+    
+    # Convert Gemini-style messages if needed
+    for m in messages:
+      if "parts" in m and "content" not in m:
+        m["content"] = "".join(m["parts"])
+        del m["parts"]
+    
+    # Add "plan" field if given
+    status = readStatus()
+    if "plan" in status:
+      messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
+    
+  # Extract API from model for use throughout the function
+  api = models[model]["api"]
+
   # Confirm.
   print("")
-  print("The following prompt will be sent to " + model + "'s API together with the Verilog and prior messages:")
+  prompt_type = "macro" if macro_id is not None else "individual"
+  print(f"The following {prompt_type} prompt will be sent to " + model + "'s API together with the Verilog and prior messages:")
   print("")
   print(messages[-1]["content"])
   print("")
@@ -1666,7 +1655,6 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
     
     reject = response_str == ""
 
-
     if not reject:
       # Process the response.
       response_obj = get_message_bundler_for_model(model).response_to_obj(response_str, verilog)
@@ -1682,19 +1670,38 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
         reject = True
       else:
         # Check that this prompt produces all requested fields. If it does not, we force rejection.
-        if "must_produce" in prompts[prompt_id]:
-          if use_extra_fields and not "extra_fields" in response_obj:
-            print("Error: API response is missing \"extra_fields\" field.")
-            print("Rejecting response.")
-            reject = True
-          else:
-            # Make sure all extra_fields exist in response.
-            extra_fields = response_obj if not use_extra_fields else response_obj["extra_fields"]
-            for field in prompts[prompt_id]["must_produce"]:
-              if field not in extra_fields:
-                print("Error: API response is missing required field: " + field)
-                print("Rejecting response.")
-                reject = True
+        # For macro prompts, check macro requirements; for individual prompts, check prompt requirements
+        if macro_id is not None:
+          # Check macro prompt requirements
+          macro = macro_prompts[macro_id]
+          if "must_produce" in macro:
+            if use_extra_fields and not "extra_fields" in response_obj:
+              print("Error: API response is missing \"extra_fields\" field.")
+              print("Rejecting response.")
+              reject = True
+            else:
+              # Make sure all extra_fields exist in response.
+              extra_fields = response_obj if not use_extra_fields else response_obj["extra_fields"]
+              for field in macro["must_produce"]:
+                if field not in extra_fields:
+                  print("Error: API response is missing required field: " + field)
+                  print("Rejecting response.")
+                  reject = True
+        else:
+          # Check individual prompt requirements
+          if "must_produce" in prompts[prompt_id]:
+            if use_extra_fields and not "extra_fields" in response_obj:
+              print("Error: API response is missing \"extra_fields\" field.")
+              print("Rejecting response.")
+              reject = True
+            else:
+              # Make sure all extra_fields exist in response.
+              extra_fields = response_obj if not use_extra_fields else response_obj["extra_fields"]
+              for field in prompts[prompt_id]["must_produce"]:
+                if field not in extra_fields:
+                  print("Error: API response is missing required field: " + field)
+                  print("Rejecting response.")
+                  reject = True
 
     if not reject:
       # We haven't forced rejection.
@@ -1709,9 +1716,6 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
         response_obj["verilog"] = "See meld."
       print(json.dumps(response_obj, indent=4))
       if code:
-        #print("-------------")
-        #print(code)
-        #print("-------------")
         # Repair the response.
         response_obj["verilog"] = code
       print("")
@@ -1780,9 +1784,19 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       # Record plan.
       if "plan" in response_obj:
         status["plan"] = response_obj["plan"]
+              
       # Apply combination of must_produce and may_produce fields to status.
-      for field in prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", []):
-        if field in extra_fields:
+      # Handle both macro and individual prompt fields
+      if macro_id is not None:
+        # For macro prompts, get fields from macro definition
+        macro = macro_prompts[macro_id]
+        field_sources = macro.get("must_produce", []) + macro.get("may_produce", [])
+      else:
+        # For individual prompts, get fields from prompt definition
+        field_sources = prompts[prompt_id].get("must_produce", []) + prompts[prompt_id].get("may_produce", [])
+      
+      for field in field_sources:
+        if extra_fields and field in extra_fields:
           status[field] = extra_fields[field]
 
       checkpoint(status, orig_status, "tmp/llm.v")
@@ -1791,57 +1805,20 @@ def run_llm(messages, verilog, model="gpt-3.5-turbo"):
       checkpoint_if_pending()
 
       # Response accepted, so delete llm_response.txt.
-      os.remove("llm_response.txt")
+      if os.path.exists("llm_response.txt"):
+        os.remove("llm_response.txt")
+        
+      # Return success indicator for macro prompts
+      if macro_id is not None:
+        return not response_obj.get("incomplete", False)
+        
     else:
       # Revert to the prior change.
       copy_if_different("tmp/pre_llm.v", working_verilog_file_name)
       print("Changes rejected. Restored to code prior to running LLM.")
-
-def run_manual_macro_llm(macro_id, model, llm_api):
-    """Run LLM with macro prompt in manual mode"""
-    try:
-        macro = macro_prompts[macro_id]
-        api = models[model]["api"]
-        
-        # Initialize macro messages
-        initialize_macro_messages_json(macro_id)
-        
-        # Get current Verilog content
-        with open(working_verilog_file_name) as verilog_file:
-            verilog = verilog_file.read().strip() + "\n"
-        
-        # Load macro messages
-        messages_json = "messages." + api + ".json"
-        with open(messages_json) as message_file:
-            msg_file_str = message_file.read()
-            msg_json = from_extended_json(msg_file_str)
-            messages = json.loads(msg_json)
-        
-        # Convert Gemini-style messages if needed
-        for m in messages:
-            if "parts" in m and "content" not in m:
-                m["content"] = "".join(m["parts"])
-                del m["parts"]
-        
-        # Add plan if it exists
-        status = readStatus()
-        if "plan" in status:
-            messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
-        
-        # Run the LLM
-        run_llm(messages, verilog, model)
-        
-        # Check if macro was completed successfully
-        new_status = readStatus()
-        if not new_status.get("incomplete", False):
-            print("Macro transformation completed.")
-            return True
-        else:
-            print("Macro transformation incomplete - will continue incrementally.")
-            return False
-            
-    except Exception as e:
-        print(f"Error running macro LLM: {str(e)}")
+      
+      # Return failure indicator for macro prompts
+      if macro_id is not None:
         return False
 
 #
@@ -2101,10 +2078,6 @@ def run_automation():
         print(f"Substeps: {substep_ids}")
         print(f"Using model: {automation_model}")
         
-        # Reinitialize messages with macro prompt content
-        print("  Initializing messages with macro prompt...")
-        initialize_macro_messages_json(macro_id)
-        
         # Try macro approach first
         macro_result = try_macro_approach(macro_id)
         if macro_result == True:
@@ -2162,17 +2135,13 @@ def try_macro_approach(macro_id):
     macro = macro_prompts[macro_id]
     substep_ids = [substep["id"] for substep in macro["substeps"]]
     
-    # Get current Verilog content
-    with open(working_verilog_file_name) as verilog_file:
-      verilog = verilog_file.read().strip() + "\n"
-    
     print(f"  Attempting macro transformation: {macro['desc']}")
     
     # Store original prompt_id for restoration if needed
     original_prompt_id = prompt_id
     
-    # Use the macro prompt
-    llm_success = run_macro_llm(macro_id, verilog)
+    # Use the unified automated LLM function with macro_id
+    llm_success = run_llm_automated(macro_id=macro_id)
 
     # Check status regardless of llm_success
     status = readStatus()
@@ -2199,7 +2168,7 @@ def try_macro_approach(macro_id):
       if run_fev_automated():
         # Accept the macro transformation
         print("  Accepting complete macro transformation...")
-        if accept_macro_step_automated(macro_id):
+        if accept_step_automated(macro_id=macro_id):  # Pass macro_id parameter
           # Skip all the substeps since macro handled them
           prompt_id = max(substep_ids) + 1
           return True
@@ -2249,59 +2218,7 @@ def try_macro_approach(macro_id):
     print(f"  Macro approach error: {str(e)}")
     return False
     
-def run_macro_llm(macro_id, verilog):
-  """Run LLM with macro prompt"""
-  global automation_model
-  
-  try:
-    macro = macro_prompts[macro_id]
-    model = automation_model
-    api = models[model]["api"]
     
-    # Create macro-specific messages
-    messages_json = "messages." + api + ".json"
-    
-    # Load base messages and modify for macro prompt
-    with open(messages_json) as message_file:
-      msg_file_str = message_file.read()
-      msg_json = from_extended_json(msg_file_str)
-      messages = json.loads(msg_json)
-    
-    # Replace the prompt with macro prompt
-    macro_message = macro["prompt"]
-    
-    # Add must_produce fields if present
-    if "must_produce" in macro:
-      macro_message += "\n\nNote that this macro transformation must produce the following extra fields:"
-      for field in macro["must_produce"]:
-        macro_message += f"\n   {field}: (required field)"
-    
-    # Update the last message content
-    messages[-1]["content"] = macro_message
-    
-    # Convert Gemini-style messages if needed
-    for m in messages:
-      if "parts" in m and "content" not in m:
-        m["content"] = "".join(m["parts"])
-        del m["parts"]
-    
-    # Add "plan" field if given (same as manual flow)
-    status = readStatus()
-    if "plan" in status:
-      messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
-    
-    print(f"  Calling LLM API with macro prompt ({model})...")
-    
-    # Run the LLM
-    run_llm(messages, verilog, model)
-    
-    # Check if completed successfully
-    return llm_finished()
-    
-  except Exception as e:
-    automation_errors.append(f"Macro LLM error: {str(e)}")
-    return False
-
 def run_incremental_step():
   """Run a single incremental step"""
   # Step 1: Run LLM
@@ -2327,7 +2244,7 @@ def run_incremental_step():
   
   return True
 
-def run_llm_automated():
+def run_llm_automated(macro_id=None):
   """Run LLM in automated mode, return True if successful"""
   global automation_errors, automation_model, automation_mode
   # Ensure automation_mode is True during this call
@@ -2389,9 +2306,8 @@ def run_llm_automated():
       automation_errors.append(f"Failed to load {messages_json}: {str(e)}")
       return False
     
-    print(f"  Calling LLM API ({model})...")
-    # Use the same run_llm call as manual flow
-    run_llm(messages, verilog, model)
+    # Use the unified run_llm call with macro_id parameter
+    run_llm(messages, verilog, model, macro_id=macro_id)
 
     # Check if LLM completed successfully
     if not llm_finished():
@@ -2476,7 +2392,7 @@ def select_automation_model():
       print("Invalid input. Enter a number or 'c' to cancel.")
 
 
-def accept_step_automated():
+def accept_step_automated(macro_id=None):
   """Accept the refactoring step in automated mode, return True if successful"""
   global automation_errors
   
@@ -2508,17 +2424,47 @@ def accept_step_automated():
     
     # Accept the modification
     status["accepted"] = True
-    writeStatus(status)
     
-    # Move to next refactoring step
-    init_refactoring_step()
+    # Handle macro-specific acceptance
+    if macro_id is not None:
+      # Add macro-specific metadata
+      status["macro_id"] = macro_id
+      status["macro_desc"] = macro_prompts[macro_id]["desc"]
+      
+      # Extract substep IDs
+      substep_ids = [substep["id"] for substep in macro_prompts[macro_id]["substeps"]]
+      status["substeps_completed"] = substep_ids
+      
+      writeStatus(status)
+      
+      # Determine what the NEXT step should be
+      next_prompt_id = max(substep_ids) + 1
+      next_macro_id = find_macro_for_prompt(next_prompt_id)
+      
+      if next_macro_id is not None:
+        # Next step is a macro - get substep IDs
+        next_substep_ids = [substep["id"] for substep in macro_prompts[next_macro_id]["substeps"]]
+        init_macro_refactoring_step(next_macro_id, next_substep_ids)
+      else:
+        # Next step is an individual prompt
+        init_refactoring_step()  # This will use the correct prompt_id
+      
+      print("  Macro refactoring step accepted successfully")
+    else:
+      # Individual step acceptance
+      writeStatus(status)
+      
+      # Move to next refactoring step
+      init_refactoring_step()
+      
+      print("  Refactoring step accepted successfully")
     
-    print("  Refactoring step accepted successfully")
     return True
       
   except Exception as e:
-    automation_errors.append(f"Accept step error: {str(e)}")
-    return False      
+    step_type = "macro" if macro_id is not None else "individual"
+    automation_errors.append(f"Accept {step_type} step error: {str(e)}")
+    return False
 
 def show_automation_errors():
   """Display current automation errors"""
@@ -2551,60 +2497,6 @@ def show_automation_errors():
       print("Automation model updated.")
     else:
       print("Model selection cancelled.")
-
-def accept_macro_step_automated(macro_id):
-  """Accept a macro refactoring step, creating history entry for the entire macro"""
-  global automation_errors
-  
-  try:
-    status = readStatus()
-    
-    # Check if there are pending manual edits and checkpoint them automatically
-    if diff(working_verilog_file_name, mod_path() + "/" + working_verilog_file_name):
-      print("  Found pending manual edits, checkpointing them...")
-      checkpoint_if_pending()
-      print("  Manual edits checkpointed successfully")
-    
-    if status.get("fev") != "passed":
-      automation_errors.append("FEV has not passed - cannot auto-accept")
-      return False
-    
-    # Check for problematic comments
-    grep_output = os.popen("grep -E 'LLM: (New|Old) Task:' " + working_verilog_file_name).read()
-    grep_output += os.popen("grep -E '//\s*User:' " + working_verilog_file_name).read()
-    
-    if grep_output != "":
-      automation_errors.append("Found comments that need manual review - cannot auto-accept")
-      return False
-    
-    # Accept the macro modification
-    status["accepted"] = True
-    status["macro_id"] = macro_id
-    status["macro_desc"] = macro_prompts[macro_id]["desc"]
-    
-    # Extract substep IDs
-    substep_ids = [substep["id"] for substep in macro_prompts[macro_id]["substeps"]]
-    status["substeps_completed"] = substep_ids
-    writeStatus(status)
-    
-    # Determine what the NEXT step should be
-    next_prompt_id = max(substep_ids) + 1
-    next_macro_id = find_macro_for_prompt(next_prompt_id)
-    
-    if next_macro_id is not None:
-      # Next step is a macro - get substep IDs
-      next_substep_ids = [substep["id"] for substep in macro_prompts[next_macro_id]["substeps"]]
-      init_macro_refactoring_step(next_macro_id, next_substep_ids)
-    else:
-      # Next step is an individual prompt
-      init_refactoring_step()  # This will use the correct prompt_id
-    
-    print("  Macro refactoring step accepted successfully")
-    return True
-      
-  except Exception as e:
-    automation_errors.append(f"Accept macro step error: {str(e)}")
-    return False
 
 def accept_manual_macro_step(macro_id):
     """Accept a macro step in manual mode and update prompt_id accordingly"""
@@ -2939,22 +2831,6 @@ def find_macro_for_prompt(prompt_id):
           return macro_id
   return None
 
-def get_original_prompt_id(current_prompt_id):
-  """Get the original prompt ID from the current prompt ID"""
-  if current_prompt_id < len(prompts):
-    return prompts[current_prompt_id].get("original_id", current_prompt_id)
-  return current_prompt_id
-
-def should_use_macro_approach(prompt_id, verilog_code):
-  """Determine if we should try macro approach first"""
-  macro_id = find_macro_for_prompt(prompt_id)
-  if macro_id is None:
-    return False
-  
-  # Always attempt macro approach if macro prompt exists
-  print("  Attempting macro approach")
-  return True
-
 #
 # Determine file names.
 #
@@ -3185,8 +3061,31 @@ while True:
           print(f"Using macro approach: {macro_prompts[macro_id]['desc']}")
           # Update prompt_id.txt to reflect macro approach IMMEDIATELY
           update_prompt_id_for_macro(macro_id)
-          # Run macro LLM
-          macro_success = run_manual_macro_llm(macro_id, model, llm_api)
+          
+          # Get current Verilog content
+          with open(working_verilog_file_name) as verilog_file:
+            verilog = verilog_file.read().strip() + "\n"
+          
+          # Load macro messages (should be initialized)
+          messages_json = "messages." + api + ".json"
+          with open(messages_json) as message_file:
+            msg_file_str = message_file.read()
+            msg_json = from_extended_json(msg_file_str)
+            messages = json.loads(msg_json)
+          
+          # Convert Gemini-style messages if needed
+          for m in messages:
+            if "parts" in m and "content" not in m:
+              m["content"] = "".join(m["parts"])
+              del m["parts"]
+          
+          # Add plan if it exists
+          status = readStatus()
+          if "plan" in status:
+            messages[-1]["content"] += ("\n\nAnother agent has already made some progress and has established this plan:\n\n" + status["plan"])
+          
+          # Run macro LLM using unified function
+          macro_success = run_llm(messages, verilog, model, macro_id=macro_id)
           
           if macro_success:
             # Macro completed successfully
@@ -3197,11 +3096,17 @@ while True:
             status["macro_id"] = macro_id
             writeStatus(status)
           else:
-            # Macro incomplete, continue with normal flow
-            print("Macro approach incomplete. Continuing with normal individual prompt flow.")
-            # Reinitialize with individual prompt
-            write_prompt_id()
-            initialize_messages_json()
+            # Check if this is incremental work (incomplete) or actual failure
+            status = readStatus()
+            if status.get("incomplete", False):
+              # Macro is working incrementally - keep macro approach with plan
+              print("Macro LLM is incomplete. Keeping macro messages with established plan.")
+            else:
+              # Actual failure - fall back to individual approach
+              print("Macro approach failed. Continuing with normal individual prompt flow.")
+              # Reinitialize with individual prompt
+              write_prompt_id()
+              initialize_messages_json()
         else:
           # Use individual approach
           with open(messages_json) as message_file:
