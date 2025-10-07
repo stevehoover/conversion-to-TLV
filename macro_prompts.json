@@ -654,7 +654,7 @@
   }]
 }, {
   "desc": "Code Structure and Declaration Management",
-  "prompt": "Clean up the overall code structure by organizing generate blocks with proper naming, localizing declarations to appropriate scopes, combining declarations with assignments where beneficial, and elevating declarations to proper hierarchical levels.\n\n**Generate Block Naming and Syntax:**\nFor consistency, give every generate block a short, appropriate name and remove all uses of `generate`/`endgenerate` (which are optional in SystemVerilog):\n```verilog\n// Original\ngenvar i;\ngenerate\n    for (i = 0; i < 4; i = i + 1) begin: my_block\n        // ...\n    end\nendgenerate\n\n// Cleaned up\nfor (genvar i = 0; i < 4; i = i + 1) begin: my_block\n    // ...\nend\n```\n\n**Declaration Localization:**\nMake declarations as localized as possible. Signals used only within a generate block should be declared within that block. For signals used in for loops:\n\n```verilog\n// Original - array declarations outside loop\nlogic [31:0] x [3:0];\nlogic [31:0] y [3:0];\nfor (genvar i = 0; i < 4; i = i + 1) begin: my_block\n    assign x[i] = i;\n    assign y[i] = x[(i + 1) % 4];\nend\n\n// Localized - individual signals inside loop\nfor (genvar i = 0; i < 4; i = i + 1) begin: my_block\n    logic [31:0] x;\n    logic [31:0] y;\n    assign x = i;\n    assign y = my_block[(i + 1) % 4].x;  // Cross-reference through named block\nend\n```\n\n**Declaration and Assignment Combination:**\nCombine logic signal declarations with their assignments when beneficial:\n```verilog\n// Original separated\nlogic y;\nassign y = a & b;\n\n// Combined\nlogic y = a & b;\n```\n\n**Declaration Elevation:**\nReorder code to elevate all signal declarations to the top of their containing scope:\n- Module-level signals to top of module body\n- Loop/conditional block signals to top of their respective blocks\n\nThis creates a clear separation between declarations and logic, improving code readability and maintainability.\n\n**Comment Preservation:**\nCarefully preserve and appropriately relocate comments during restructuring. Comments that span multiple blocks may need to be moved outside the blocks or replicated. Add \"TODO: LLM: ...\" comments for complex commenting situations requiring human review.",
+  "prompt": "Clean up the overall code structure by organizing generate blocks with proper naming, localizing declarations to appropriate scopes, and elevating declarations to proper hierarchical levels.\n\n**Generate Block Naming and Syntax:**\nFor consistency, give every generate block a short, appropriate name and remove all uses of `generate`/`endgenerate` (which are optional in SystemVerilog):\n```verilog\n// Original\ngenvar i;\ngenerate\n    for (i = 0; i < 4; i = i + 1) begin: my_block\n        // ...\n    end\nendgenerate\n\n// Cleaned up\nfor (genvar i = 0; i < 4; i = i + 1) begin: my_block\n    // ...\nend\n```\n\n**Declaration Localization:**\nMake declarations as localized as possible. Signals used only within a generate block should be declared within that block. For signals used in for loops:\n\n```verilog\n// Original - array declarations outside loop\nlogic [31:0] x [3:0];\nlogic [31:0] y [3:0];\nfor (genvar i = 0; i < 4; i = i + 1) begin: my_block\n    assign x[i] = i;\n    assign y[i] = x[(i + 1) % 4];\nend\n\n// Localized - individual signals inside loop\nfor (genvar i = 0; i < 4; i = i + 1) begin: my_block\n    logic [31:0] x;\n    logic [31:0] y;\n    assign x = i;\n    assign y = my_block[(i + 1) % 4].x;  // Cross-reference through named block\nend\n```\n\n**Declaration Elevation:**\nReorder code to elevate all signal declarations to the top of their containing scope:\n- Module-level signals to top of module body\n- Loop/conditional block signals to top of their respective blocks\n\nThis creates a clear separation between declarations and logic, improving code readability and maintainability.\n\n**Comment Preservation:**\nCarefully preserve and appropriately relocate comments during restructuring. Comments that span multiple blocks may need to be moved outside the blocks or replicated. Add \"TODO: LLM: ...\" comments for complex commenting situations requiring human review.",
   "substeps": [{
     "id": 27,
     "desc": "Named block syntax",
@@ -706,22 +706,6 @@
     +```"
   }, {
     "id": 29,
-    "desc": "Embed declarations in assignments",
-    "prompt":
-    "`logic` signal declarations may be followed by an assignment. Combine declarations and assignments. For example:
-    +
-    +```verilog
-    +logic y;
-    +assign y = a & b;
-    +```
-    +
-    +becomes:
-    +
-    +```verilog
-    +logic y = a & b;
-    +```"
-  }, {
-    "id": 30,
     "desc": "Elevate declarations",
     "prompt":
     "Reorder the code to elevate all signal declarations to the top of the module body or to the top of the loop or conditional block containing their declaration."
@@ -732,7 +716,7 @@
   "may_produce": ["pipelines"],
   "prompt": "Comprehensively analyze the design for pipeline structures, determine and document signal naming conventions, optimize reset usage for pipeline-aware design, and prepare the code for pipeline-aware TL-Verilog conversion.\n\n**Signal Naming Convention Analysis:**\nAnalyze signal names looking for suffixes/prefixes indicating signal nature and staging:\n- Pipeline stage indicators (often numeric suffixes or stage mnemonics)\n- Input/output prefixes ('i_', 'o_')\n- Temporary signal indicators (like 'NEXT_' prefix used in conversion)\n- Clock edge indicators (signals that change on rising/falling edges)\n- Grouping conventions for related logic\n\nPay particular attention to staging relationships between signals. Document findings in the \"naming\" extra output field.\n\n**Data Flow Analysis:**\nAnalyze how data flows through the design:\n- Identify data paths from inputs to outputs\n- Trace signal transformations through processing stages\n- Note any backpressure or stalling mechanisms\n- Pay attention to high-level code comments describing microarchitecture\n\nAdd \"LLM: ...\" comments describing the data flow patterns discovered.\n\n**Pipeline Structure Identification:**\nIdentify pipeline structures where computations/processing span multiple clock cycles:\n- Look for data staging through multiple flip-flops\n- Identify free-flowing processing without backpressure/stalling\n- Determine meaningful names for identified pipelines\n- Establish pipeline stage numbering (first stage with logic = stage 1)\n\nAdd \"LLM: ...\" comments annotating pipeline stages. If no pipelines found, set \"pipelines\" extra output field to \"none\".\n\n**Reset Optimization:**\nAnalyze reset usage for optimization opportunities:\n- Identify signals forced to specific values during reset\n- Determine if signals would naturally assume the same values without explicit reset\n- Remove unnecessary reset assignments where the natural value matches the reset value\n\nThis reduces reset complexity while maintaining correct initialization behavior.\n\n**Pipeline Signal Naming Convention:**\nApply consistent naming for pipelined signals using the convention:\n`<name>__<PIPELINE><stage>`\n\nExamples:\n- `pc__CPU_A3` for program counter at stage 3 of CPU pipeline\n- `data__MEM_A1` for data at stage 1 of memory pipeline\n\nUse uppercase for pipeline mnemonics and 'A' (for 'at') before stage numbers.\n\n**Staged Reset Implementation:**\nFor pipelined designs, implement staged reset methodology where reset signals traverse pipelines like data:\n- Pipeline the reset signal through the same stages as data\n- Apply staged reset versions to appropriate pipeline stages\n- This creates \"reset transactions\" that flow through the pipeline\n\nSince reset is held for multiple cycles, this approach typically has no functional impact but improves timing and design consistency.\n\n**Pipeline Stage Documentation:**\nDocument pipeline stages clearly in code comments, noting:\n- Pipeline boundaries and stage transitions\n- Data transformations at each stage\n- Any control signals affecting pipeline flow\n- Reset behavior at each stage",
   "substeps": [{
-    "id": 31,
+    "id": 30,
     "desc": "Determine the signal naming conventions",
     "comment": "This would work better as a code analysis step that analyzes the entire codebase.",
     "must_produce": ["naming"],
@@ -743,14 +727,14 @@
     +
     +Add an extra output field, called \"naming\", in your response that describes the signal naming convention."
   }, {
-    "id": 32,
+    "id": 31,
     "desc": "Data flow",
     "TODO": "This would work better as a code analysis step that analyzes the entire codebase.",
     "needs": ["naming"],
     "prompt":
     "Analyze the code to determine how data flows through the design. Add \"LLM: ...\" comments to the code to describe this data flow. Pay attention to high-level code comments that might describe the microarchitecture of the design. You also might get hints from signal naming conventions, as described below."
   }, {
-    "id": 33,
+    "id": 32,
     "desc": "Pipelines",
     "needs": ["naming"],
     "TODO": "Can't have optional 'pipelines' field.",
@@ -762,18 +746,18 @@
     +
     +Pay attention to signal naming conventions that might indicate pipeline stages. These conventions have been analyzed and are described below."
   }, {
-    "id": 34,
+    "id": 33,
     "desc": "Eliminate unnecessary use of reset",
     "prompt":
     "Often, designers apply reset more aggressively than necessary. We want to use a reset methodology where reset will be asserted for a minimum of five cycles to initialize the circuit. Analyze all places where reset is applied to force a value on a signal during reset. See if you can determine the value the signal would have if reset were not applied to it directly. If it would be the same, remove the reset assignment."
   }, {
-    "id": 35,
+    "id": 34,
     "desc": "Stages",
     "needs": ["naming"],
     "prompt":
     "Apply a signal naming convention to signals that are part of pipelines. Pay attention to \"LLM: \" comments identifying pipelines and stage numbers. Use the naming convention <name>__<PIPELINE><stage>, e.g. pc__CPU_A3 for the program counter at stage 3 of a CPU pipeline. Use upper case for pipeline mnemonics like \"CPU\" and \"A\" (for at) before the stage number. Each such signal will have an associated pipeline mnemonic and stage number. Apply this consistently such that all flip-flops produce signals with names that differ only in that the output signal has an incremented stage number. This may require renaming signals in the code."
   }, {
-    "id": 36,
+    "id": 35,
     "desc": "Stage reset",
     "unless": {"pipelines": "none"},
     "prompt":
@@ -782,9 +766,11 @@
     +Since `reset` is held for multiple cycles, there is usually no functional impact from applying `reset` after a delay. Where `reset` is applied to pipelined logic, pipeline the reset signal, and apply the staged version of the reset signal to the appropriate pipeline stage."
   }]
 }, {
-  "desc": "TL-Verilog Signal Naming Compliance",
-  "prompt": "Transform all signal names to strictly adhere to TL-Verilog naming conventions, ensuring compatibility with TL-Verilog pipesignal requirements and preparing for successful conversion.\n\n**TL-Verilog Naming Requirements:**\nSignals in TL-Verilog (called \"pipesignals\") must follow strict naming conventions:\n\n1. **Case Requirements:** All letters must be lowercase\n2. **Word Separation:** Words separated by underscores only\n3. **Number Placement:** Numbers can only appear directly following words (not standalone)\n4. **Minimum Length:** Names must be at least two characters long\n5. **Initial Characters:** First two characters must be letters\n6. **Valid Examples:** 'data_op2', 'mem_addr', 'cpu_state'\n7. **Invalid Examples:** 'DataOp', 'a', '2data', 'op_2_sel'\n\n**Systematic Name Transformation:**\nTransform existing signal names while preserving semantic meaning:\n\n```verilog\n// Original non-compliant names\nDataValid       → data_valid\nopCode          → op_code\na               → aa (or more descriptive name)\nPC              → pc\nmemAddr2        → mem_addr2\nCPU_State       → cpu_state\n```\n\n**Pipeline Signal Preservation:**\nFor signals with pipeline stage suffixes using the `<name>__<PIPELINE><stage>` convention (e.g., `pc__CPU_A3`), only modify the `<name>` portion before the `__`:\n\n```verilog\n// Preserve pipeline staging\nProgramCounter__CPU_A3  → program_counter__CPU_A3\ndataPath__MEM_A1        → data_path__MEM_A1\nopCode__DECODE_A2       → op_code__DECODE_A2\n```\n\n**Single Character Name Handling:**\nFor single-letter signal names, either:\n1. Use double letters if no semantic meaning is clear: `a` → `aa`\n2. Choose descriptive names based on usage context: `a` → `addr`, `d` → `data`\n\n**Systematic Transformation Process:**\n1. Identify all signal declarations and usages\n2. Check each name against TL-Verilog requirements\n3. Transform non-compliant names while preserving meaning\n4. Update all references throughout the module\n5. Preserve any pipeline stage suffixes\n\n**Validation:**\nEnsure all transformed names:\n- Are at least 2 characters long\n- Start with two letters\n- Use only lowercase letters, underscores, and trailing numbers\n- Maintain clear semantic meaning\n- Preserve pipeline stage information where applicable\n\nThis final naming step ensures complete compatibility with TL-Verilog conversion tools and maintains code readability.",
+  "desc": "TL-Verilog-formatted signal names",
+  "prompt": "Transform all internal signal names to strictly adhere to TL-Verilog naming conventions, ensuring compatibility with TL-Verilog pipesignal requirements and preparing for successful conversion. **Do not modify module interface signals (inputs and outputs) as these must maintain compatibility with external connections.**\n\n**TL-Verilog Naming Requirements:**\nSignals in TL-Verilog (called \"pipesignals\") must follow strict naming conventions:\n\n1. **Case Requirements:** All letters must be lowercase\n2. **Word Separation:** Words separated by underscores only\n3. **Number Placement:** Numbers can only appear directly following words (not standalone)\n4. **Minimum Length:** Names must be at least two characters long\n5. **Initial Characters:** First two characters must be letters\n6. **Valid Examples:** 'data_op2', 'mem_addr', 'cpu_state'\n7. **Invalid Examples:** 'DataOp', 'a', '2data', 'op_2_sel'\n\n**Systematic Name Transformation:**\nTransform existing internal signal names while preserving semantic meaning:\n\n```verilog\n// Original non-compliant names\nDataValid       → data_valid\nopCode          → op_code\na               → aa (or more descriptive name)\nPC              → pc\nmemAddr2        → mem_addr2\nCPU_State       → cpu_state\n```\n\n**Interface Signal Preservation:**\nModule inputs and outputs should remain unchanged to maintain external interface compatibility.\n\n**Pipeline Signal Preservation:**\nFor signals with pipeline stage suffixes using the `<name>__<PIPELINE><stage>` convention (e.g., `pc__CPU_A3`), only modify the `<name>` portion before the `__`:\n\n```verilog\n// Preserve pipeline staging\nProgramCounter__CPU_A3  → program_counter__CPU_A3\ndataPath__MEM_A1        → data_path__MEM_A1\nopCode__DECODE_A2       → op_code__DECODE_A2\n```\n\n**Single Character Name Handling:**\nFor single-letter signal names, either:\n1. Use double letters if no semantic meaning is clear: `a` → `aa`\n2. Choose descriptive names based on usage context: `a` → `addr`, `d` → `data`\n\n**Systematic Transformation Process:**\n1. Identify all internal signal declarations and usages\n2. Check each name against TL-Verilog requirements\n3. Transform non-compliant names while preserving meaning\n4. Update all references throughout the module\n5. Preserve any pipeline stage suffixes\n6. Leave module interface signals unchanged\n\n**Validation:**\nEnsure all transformed internal signal names:\n- Are at least 2 characters long\n- Start with two letters\n- Use only lowercase letters, underscores, and trailing numbers\n- Maintain clear semantic meaning\n- Preserve pipeline stage information where applicable\n- Do not affect module interface compatibility\n\nThis final naming step ensures complete compatibility with TL-Verilog conversion tools while maintaining external interface integrity and code readability.",
   "substeps": [{
+    "id": 36,
+    "desc": "TL-Verilog-formatted signal names",
     "background":
     "Signals in TL-Verilog are referred to as \"pipesignals\". They follow a specific naming convention:
     +
@@ -795,6 +781,6 @@
     +
     +For example: 'data_op2'.",
     "prompt":
-    "Update the names of signals in the design to adhere to the TL-Verilog naming convention. Some existing signals will have a suffix indicating their pipelines and pipeline stages. These use the naming convention <name>__<PIPELINE><stage>, e.g. pc__CPU_A3 for the program counter at stage 3 of a CPU pipeline. For these signals, correct the <name> portion without modifying the part after `__`. For single-letter signal names like `a`, consider using a more descriptive name or `aa`."
+    "Update the names of internal signals in the design to adhere to the TL-Verilog naming convention. **Do not modify module interface signals (inputs and outputs)** as these must maintain compatibility with external connections.\n\nSome existing signals will have a suffix indicating their pipelines and pipeline stages. These use the naming convention <name>__<PIPELINE><stage>, e.g. pc__CPU_A3 for the program counter at stage 3 of a CPU pipeline. For these signals, correct the <name> portion without modifying the part after `__`. For single-letter internal signal names like `a`, consider using a more descriptive name or `aa`.\n\nOnly rename signals that are declared within the module body, not those declared in the module interface (input/output declarations)."
   }]
 }]
