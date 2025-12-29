@@ -1837,7 +1837,25 @@ def run_eqy():
 # Return the subprocess.CompletedProcess of the FEV command.
 def run_yosys_fev(module_name, orig_file_name, modified_file_name):
   env = {"TOP_MODULE": module_name, "ORIGINAL_VERILOG_FILE": orig_file_name, "MODIFIED_VERILOG_FILE": modified_file_name}
-  return subprocess.run(["yosys", repo_dir + "/fev.tcl"], env=env)
+  # Capture output to check for proof success/failure
+  # Yosys SAT command does NOT return error code on proof failure!
+  # Must parse output text:
+  #   - "Dumping SAT model" = proof FAILED (counterexample found)
+  #   - No dump message = proof SUCCEEDED (no counterexample)
+  proc = subprocess.run(["yosys", repo_dir + "/fev.tcl"], env=env, capture_output=True, text=True)
+  
+  # Check if SAT found a counterexample (proof failure)
+  output_text = proc.stdout + proc.stderr
+  if "Dumping SAT model" in output_text:
+    # Create a modified return object that indicates failure
+    class FEVResult:
+      def __init__(self):
+        self.returncode = 1
+        self.stdout = proc.stdout
+        self.stderr = proc.stderr
+    return FEVResult()
+  
+  return proc
 
 
 # Run FEV against the given files.

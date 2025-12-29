@@ -61,6 +61,11 @@ if {$reset_assertion_level ne ""} {
         append reset_cmds " -set-at $i in_$reset_signal_name $operational_level"
     }
 }
-set sat_cmd "sat -show-all -seq 19 -prove-asserts -enable_undef -set-init-zero $reset_cmds -dump_vcd tmp/fev.vcd miter"
+# Run SAT to prove that trigger is always 0 (designs are equivalent)
+# Use -prove-x to handle X-bits: X in LHS matches any value in RHS
+# This is critical for comparing designs with different X-propagation
+# If proof FAILS (finds counterexample), it will print "Dumping SAT model"
+# If proof SUCCEEDS (no counterexample), no model is dumped
+set sat_cmd "sat -show-all -seq 19 -prove-x trigger 0 -enable_undef -set-init-zero $reset_cmds -dump_vcd tmp/fev.vcd miter"
 puts $sat_cmd
 yosys $sat_cmd
