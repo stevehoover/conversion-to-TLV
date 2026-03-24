@@ -9,10 +9,11 @@ In a Ubuntu or MacOS system, clone, `cd` into repo, and run `./init`, which will
 To use LLMs and TL-Verilog to improve all existing Verilog by reducing its size, improving its maintainability, making it more configurable, and identifying bugs? How could we possibly do all that? Transaction-Level Verilog (TL-Verilog) models are smaller, cleaner, and less bug-prone than their Verilog counterparts. But there's not much TL-Verilog in the wild yet. Advancements in AI make it feasible to automate the process of converting existing Verilog models to TL-Verilog.
 
 If you ask ChatGPT to convert your code today, you won't be happy with the results[.](https://gitlab.com/rweda/Makerchip-public) But with a thoughtful approach, LLMs can help. Through a series of incremental conversion steps, backed by formal verification, automated conversion is possible, and the results will have better quality than without LLM, especially when it comes to preserving meaningful comments.
+This project demonstrates how AI can assist in improving hardware design workflows by automating code refactoring and verification.
 
 ## Approach
 
-We aim to use existing LLMs via their APIs. We do not intend to tune a custom LLM (though that might be an option). The LLM will be trained through the conversation, primarily using "system messages".
+We aim to use existing LLMs via their APIs. We do not intend to tune a custom LLM (though that might be an option). The LLM is guided through structured prompts during the conversion process, primarily using system messages.
 
 A command-line Python script (`convert.py`) controls the interactions with the LLM. The script uses a recipe for conversion that includes numerous incremental conversion steps. The bulk of the process is refactoring Verilog to a form that looks similar to the (System)Verilog that would be produced by Redwood EDA's SandPiper™ tool. Each step:
 
