@@ -14,7 +14,7 @@ If you ask ChatGPT to convert your code today, you won't be happy with the resul
 
 We aim to use existing LLMs via their APIs. We do not intend to tune a custom LLM (though that might be an option). The LLM will be trained through the conversation, primarily using "system messages".
 
-A command-line Python script (`convert.py`) controls the interactions with the LLM. The script uses a recipe for conversion that includes numerous incremental conversion steps. The bulk of the process is refactoring Verilog to a form that looks similar to the (System)Verilog that would be produce by Redwood EDA's SandPiper™ tool. Each step:
+A command-line Python script (`convert.py`) controls the interactions with the LLM. The script uses a recipe for conversion that includes numerous incremental conversion steps. The bulk of the process is refactoring Verilog to a form that looks similar to the (System)Verilog that would be produced by Redwood EDA's SandPiper™ tool. Each step:
 
 - Provides the LLM with a "system message" that defines the nature of the conversion process and how to approach each step. (See `default_system_messages.txt`).
 - Provide the prompt for the step and invoke the LLM to do all or part of the step.
