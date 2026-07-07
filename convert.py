@@ -1885,6 +1885,26 @@ def run_fev(orig_file_name, working_verilog_file_name, use_eqy = True):
   # TODO: If failed, bundle failure info for LLM, and call LLM (with approval).
   return proc.returncode == 0
 
+def recover_from_fev_failure():
+  """Revert the working code to the most recently FEVed version and mark the step
+  incomplete with feedback. Without this, automation dead-loops: the step reads as
+  "LLM already completed" so the LLM is never re-run, but the saved code can never
+  pass FEV (e.g. a renamed module port)."""
+  try:
+    good = most_recently_feved_verilog_file()
+    os.system("cp " + good + " " + working_verilog_file_name)
+    status = readStatus()
+    status["incomplete"] = True
+    status["plan"] = ("A previous attempt at this step FAILED formal equivalence verification, "
+                      "and the code has been reverted to the last verified version. Retry with "
+                      "smaller, safer changes. Do NOT rename module ports or change the module "
+                      "interface, and do NOT change functional behavior.")
+    writeStatus(status)
+    print("  Reverted to last FEVed code; step marked incomplete for retry with feedback.")
+  except Exception as e:
+    print(f"  Warning: FEV-failure recovery failed: {e}")
+
+
 def run_fev_automated():
   """Run FEV in automated mode, return True if successful"""
   global automation_errors
@@ -1895,6 +1915,7 @@ def run_fev_automated():
     
     if not success:
       automation_errors.append("FEV failed - code changes may have introduced errors")
+      recover_from_fev_failure()
       return False
         
     print("  FEV passed successfully")
