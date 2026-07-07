@@ -272,9 +272,18 @@ class OpenAI_API(LLM_API):
         self.client = OpenAI() if self.org_id is None else OpenAI(organization=self.org_id)
         self.models = self.client.models.list()
       except Exception as e:
-        print(f"Warning: Failed to initialize OpenAI API: {e}")
-        self.client = None
-        self.models = None
+        # Some OpenAI-compatible endpoints (e.g. GitHub Models) do not support the
+        # /models listing. Allow the model list to be provided via OPENAI_MODEL_LIST
+        # (comma-separated ids) so such endpoints can still be used together with
+        # OPENAI_BASE_URL.
+        if self.client is not None and os.getenv("OPENAI_MODEL_LIST"):
+          from types import SimpleNamespace
+          ids = [i.strip() for i in os.getenv("OPENAI_MODEL_LIST").split(",") if i.strip()]
+          self.models = SimpleNamespace(data=[SimpleNamespace(id=i) for i in ids])
+        else:
+          print(f"Warning: Failed to initialize OpenAI API: {e}")
+          self.client = None
+          self.models = None
     else:
       self.client = None
       self.models = None
