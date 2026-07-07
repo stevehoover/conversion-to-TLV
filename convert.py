@@ -897,8 +897,9 @@ class ChangeMerger:
         if rslt.returncode == 0:
           return True
     else:
-      # No diff.
+      # No diff. The response matches the original, which is a valid no-change result.
       shutil.copyfile(orig_file, output_file)
+      return True
     return False
   
   # Merge updated Verilog changes.
@@ -1836,7 +1837,7 @@ def run_eqy():
 # Run FEV using Yosys on the given top-level module name and orig and modified files.
 # Return the subprocess.CompletedProcess of the FEV command.
 def run_yosys_fev(module_name, orig_file_name, modified_file_name):
-  env = {"TOP_MODULE": module_name, "ORIGINAL_VERILOG_FILE": orig_file_name, "MODIFIED_VERILOG_FILE": modified_file_name}
+  env = {**os.environ, "TOP_MODULE": module_name, "ORIGINAL_VERILOG_FILE": orig_file_name, "MODIFIED_VERILOG_FILE": modified_file_name}
   # Capture output to check for proof success/failure
   # Yosys SAT command does NOT return error code on proof failure!
   # Must parse output text:
@@ -2336,6 +2337,11 @@ def run_llm_automated(macro_id=None):
     return True
       
   except Exception as e:
+    # Report the error immediately; otherwise automation fails silently and the
+    # cause is only visible via the "r" command.
+    import traceback
+    print(f"  LLM error: {str(e)}")
+    traceback.print_exc()
     automation_errors.append(f"LLM error: {str(e)}")
     return False
   finally:
